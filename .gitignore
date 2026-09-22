@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+.venv/
+__pycache__/
+
+# secrets
+.env
+.env.local
+
+# build output
+dist/
+build/
+.next/
+
+# data payloads. The folder and its scripts stay in git
+data/downloads/
