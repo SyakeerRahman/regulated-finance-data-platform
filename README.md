@@ -1,12 +1,20 @@
 # regulated-finance-data-platform
 
-One paragraph. State what this project is for and who reads the result.
+A fraud-scoring data platform for a regulated finance setting. Airflow loads transactions into
+Delta Lake tables. MLflow trains and registers a fraud model. An AWS Lambda function scores
+transactions with the model. The stack runs on Kubernetes, and GitHub Actions tests each push.
+The data is synthetic. The brief is in [docs/brief.md](docs/brief.md).
 
 ## Stack
 
 | Layer | Choice |
 | ----- | ------ |
-| TODO  | TODO   |
+| Orchestration | Apache Airflow |
+| Storage | Delta Lake (delta-rs) |
+| Model registry | MLflow |
+| Serving | AWS Lambda |
+| Infrastructure | Terraform, Kubernetes (kind, Helm) |
+| CI/CD | GitHub Actions |
 
 ## Repo layout
 

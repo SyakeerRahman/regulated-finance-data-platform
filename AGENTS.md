@@ -6,10 +6,17 @@ states only the difference from those defaults.
 
 ## Stack
 
-- **Backend:** TODO
-- **Frontend:** TODO
-- **Database:** TODO
-- **Hosting:** TODO
+| Layer | Choice |
+|---|---|
+| Language | Python 3.12 |
+| Orchestration | Apache Airflow, in Docker Compose for weekends 1 and 2 |
+| Storage | Delta Lake tables through `deltalake` (delta-rs). No Spark |
+| Model registry | MLflow tracking server |
+| Model | scikit-learn |
+| Serving | AWS Lambda, container image |
+| Infrastructure | Terraform for AWS. kind and Helm for local Kubernetes |
+| CI/CD | GitHub Actions |
+| Data | Synthetic transactions from `data/generate.py`. No real customer data |
 
 The stack is locked. Do not propose an alternative without a stated reason.
 
