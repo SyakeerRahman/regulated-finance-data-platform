@@ -16,7 +16,7 @@ states only the difference from those defaults.
 | Serving | AWS Lambda, container image |
 | Infrastructure | Terraform for AWS. kind and Helm for local Kubernetes |
 | CI/CD | GitHub Actions |
-| Data | Synthetic transactions from `data/generate.py`. No real customer data |
+| Data | Synthetic transactions from `finplat/generate.py`. No real customer data |
 
 The stack is locked. Do not propose an alternative without a stated reason.
 
@@ -24,10 +24,19 @@ The stack is locked. Do not propose an alternative without a stated reason.
 
 ```text
 regulated-finance-data-platform/
-  AGENTS.md    # this file
+  AGENTS.md                 # agent instructions (read first)
   README.md
-  docs/        # the brief, the specs, the agent chain output
-  data/        # local corpus and download scripts (payloads gitignored)
+  finplat/                  # the pipeline package
+    settings.py             # the one settings module. Reads LAKE_URI
+    generate.py             # synthetic transactions, dirty rows included
+    pipeline.py             # bronze, silver (quarantine + merge), gold
+    run.py                  # one day without Airflow
+  dags/                     # Airflow DAGs. Thin: each task calls finplat
+  tests/                    # pytest, against a temporary lake
+  docs/                     # the brief
+  data/lake/                # Delta tables (gitignored)
+  Dockerfile                # Airflow image plus the pipeline libraries
+  docker-compose.yml        # Airflow standalone on port 8095
 ```
 
 ## Dependency policy

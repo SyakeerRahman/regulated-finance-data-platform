@@ -1,0 +1,2 @@
+deltalake==1.6.3
+pydantic-settings==2.15.0

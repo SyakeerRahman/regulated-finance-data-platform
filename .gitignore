@@ -14,3 +14,5 @@ build/
 
 # data payloads. The folder and its scripts stay in git
 data/downloads/
+# Delta tables written by the pipeline
+data/lake/

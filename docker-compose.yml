@@ -1,0 +1,16 @@
+services:
+  airflow:
+    build: .
+    command: standalone
+    ports:
+      - "8095:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Local only: every visitor is an admin, so there is no generated password to look up.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      LAKE_URI: /opt/lake
+      PYTHONPATH: /opt/project
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./finplat:/opt/project/finplat
+      - ./data/lake:/opt/lake
