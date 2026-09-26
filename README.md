@@ -26,6 +26,8 @@ regulated-finance-data-platform/
     settings.py             # the one settings module. Reads LAKE_URI
     generate.py             # synthetic transactions and their late labels
     pipeline.py             # bronze, silver (quarantine + merge + labels), gold
+    train.py                # fit a model on the labels known by a cutoff date
+    registry.py             # list the model versions, promote one to production
     run.py                  # one day without Airflow
   dags/                     # Airflow DAGs. Thin: each task calls finplat
   tests/                    # pytest, against a temporary lake
@@ -47,8 +49,11 @@ regulated-finance-data-platform/
 1. Make the settings file: `echo LAKE_URI=data/lake > .env`
 2. Run the tests: `uv run pytest`
 3. Run one day without Airflow: `uv run python -m finplat.run 2026-09-01`
-4. Start Airflow: `docker compose up -d --build`
+4. Start Airflow and MLflow: `docker compose up -d --build`
 5. Open http://localhost:8095 and trigger `transactions_to_delta`.
+6. Train a model: `uv run python -m finplat.train 2027-01-01`
+7. Promote it: `uv run python -m finplat.registry list`, then `... promote <version>`
+8. Open http://localhost:8096 to compare the runs.
 
 ## The tables
 
@@ -86,6 +91,35 @@ Three limits follow, and they apply to every result in this repository:
 3. No public dataset of labelled card transactions exists, because card scheme rules and privacy
    law forbid it. Synthetic data is the only option, not a shortcut.
 
-## Local port
+## The model
 
-Airflow: 8095.
+`finplat/train.py` fits an XGBoost classifier on the gold features. Two rules hold it honest:
+
+1. **The split is by time.** The oldest 80% of judged rows train the model. The newest 20% test
+   it. A random split lets the model learn from Thursday to predict Wednesday.
+2. **The cutoff is a label date.** `training_frame(lake, as_of)` drops every transaction whose
+   verdict arrived after `as_of`, so a run cannot read a chargeback that has not happened.
+
+Accuracy is not reported. At a 1.5% fraud rate, a model that always answers "not fraud" scores
+98.5%. The run reports PR-AUC, and the precision and recall at the best threshold.
+
+MLflow records each run and registers the model. One version carries the alias `production`:
+
+```text
+version pr_auc    precision   recall    alias
+2       0.9478    0.9665      0.8587    production
+1       0.9478    0.9665      0.8587    -
+```
+
+The scorer loads `models:/fraud_model@production`, never a file path. A promotion therefore
+changes the live model with no deploy, and a rollback is one command.
+
+Read the PR-AUC of 0.95 against the limits in "What this data is not". The generator writes a
+clean fraud pattern on purpose, so a high score measures the data and not the model.
+
+## Local ports
+
+| Port | Service |
+| ---- | ------- |
+| 8095 | Airflow |
+| 8096 | MLflow |

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # The same seed and day always give the same batch, so a rerun is comparable to the first run.
     seed: int = 7
 
+    # The MLflow server. A file store cannot hold a model registry, so this is always a URL.
+    mlflow_tracking_uri: str = Field(default="http://localhost:8096", min_length=1)
+
 
 def get_settings() -> Settings:
     return Settings()

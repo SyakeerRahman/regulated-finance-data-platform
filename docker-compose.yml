@@ -10,7 +10,20 @@ services:
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
       LAKE_URI: /opt/lake
       PYTHONPATH: /opt/project
+      # Inside the network the server is a service name. localhost is the container itself.
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       - ./dags:/opt/airflow/dags
       - ./finplat:/opt/project/finplat
       - ./data/lake:/opt/lake
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.6.0
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    ports:
+      - "8096:5000"
+    volumes:
+      - ./data/mlflow:/mlflow
