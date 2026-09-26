@@ -24,7 +24,7 @@ from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
 from finplat.generate import generate
-from finplat.pipeline import SILVER, append_bronze
+from finplat.pipeline import GOLD, SILVER, append_bronze
 from finplat.quality import history as quality_history
 from finplat.registry import REGISTERED_MODEL, live_version, load_production, production_threshold, versions
 from finplat.settings import get_settings
@@ -278,4 +278,43 @@ def quality(days: int = 30) -> dict:
     }
 
 
-app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
+@app.get("/api/accounts/{account_id}")
+def account(account_id: str, limit: int = 20) -> dict:
+    """One account: what it did, and what was raised against it.
+
+    Gold is not partitioned by account, so this scans. That is honest at this size and wrong at
+    a real one, where the account history would live in Redis or an indexed table.
+    """
+    frame = DeltaTable(f"{engine.lake}/{GOLD}").to_pandas()
+    rows = frame[frame["account_id"] == account_id].sort_values("ts", ascending=False)
+    if rows.empty:
+        raise HTTPException(404, f"no transactions for {account_id}")
+
+    recent = rows.head(limit).assign(ts=lambda f: f["ts"].astype(str))
+    with engine.store.connect() as connection:
+        alerts = connection.execute(
+            "select * from alerts where account_id = %s order by created_at desc limit %s",
+            (account_id, limit),
+        ).fetchall()
+
+    return {
+        "account_id": account_id,
+        "transactions": len(rows),
+        "mean_amount": round(float(rows["amount"].mean()), 2),
+        "max_vs_account": round(float(rows["amount_vs_account"].max()), 2),
+        "abroad_share": round(float(rows["is_abroad"].mean()), 4),
+        "recent": recent.to_dict("records"),
+        "alerts": alerts,
+    }
+
+
+# The React build writes here. It is a build artifact, so a fresh clone has no copy of it and
+# the service must still start: a message is better than a crash on import. The branch matters,
+# because a route registered for "/" wins over a mount and would hide the app.
+if STATIC.is_dir():
+    app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
+else:
+
+    @app.get("/", include_in_schema=False)
+    def index_missing() -> dict:
+        return {"error": "the web app is not built", "fix": "cd web && npm install && npm run build"}

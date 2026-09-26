@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/* The chart palette, from the validated reference instance. Dark is the selected mode here,
+   not an automatic flip of light: a fraud console is read in a dim room, and the steps below
+   were validated against this surface.
+
+   Validated with scripts/validate_palette.js --mode dark --surface #1a1a19:
+   series 1 vs series 2 gives CVD Delta E 26.8 and normal-vision 31.8, both clear of the gates. */
+:root {
+  color-scheme: dark;
+
+  --plane: #0d0d0d;
+  --surface: #1a1a19;
+
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --ink-muted: #898781;
+
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --hairline: rgb(255 255 255 / 0.1);
+
+  /* Categorical slots 1 and 2, in the fixed order. Never cycled. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+
+  /* Reserved. A status colour never stands in for a series. */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+}
+
+@theme inline {
+  --color-plane: var(--plane);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-muted: var(--ink-muted);
+  --color-grid: var(--grid);
+  --color-axis: var(--axis);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-good: var(--good);
+  --color-warning: var(--warning);
+  --color-critical: var(--critical);
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* Columns of figures have to line up. Standalone numbers keep proportional figures. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

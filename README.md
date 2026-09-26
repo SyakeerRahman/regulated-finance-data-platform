@@ -36,6 +36,7 @@ regulated-finance-data-platform/
     alerts.py               # alerts and analyst decisions, in Postgres
     run.py                  # one day without Airflow
   api/                      # the live path: generate, score, stream to the browser
+  web/                      # the dashboard. React, Vite, Tailwind. Builds into api/static
   lambda_fn/                # AWS Lambda: score one transaction, standard library only
   terraform/                # the Lambda, its role, its log group, its URL
   scripts/                  # build the Lambda zip
@@ -64,8 +65,13 @@ regulated-finance-data-platform/
 6. Train a model: `uv run python -m finplat.train 2027-01-01`
 7. Promote it: `uv run python -m finplat.registry list`, then `... promote <version>`
 8. Open http://localhost:8096 to compare the runs.
-9. Start the live page: `uv run uvicorn api.main:app --port 8097`
-10. Open http://localhost:8097 and press Start.
+9. Build the dashboard: `cd web && npm install && npm run build`
+10. Start the service: `uv run uvicorn api.main:app --port 8097`
+11. Open http://localhost:8097 and press Start.
+
+`cd web && npm run dev` serves the dashboard on port 5173 with live reload and forwards `/api`
+to uvicorn. `npm run build` writes into `api/static`, which is gitignored, so one service
+answers in production.
 
 ## The tables
 
@@ -183,6 +189,29 @@ events. Three rules hold it to the batch path:
 
 Measured at 50 transactions each second: 0.93% of rows raise an alert, against a 1.5% fraud
 rate.
+
+## The dashboard
+
+Five tabs, at http://localhost:8097.
+
+| Tab | Shows |
+| --- | ----- |
+| Live | Start and rate controls, a counter, a volume chart, and the rows as they arrive |
+| Alerts | One card for each alert, its reason, and the two decision buttons |
+| Model | The live MLflow version, every registered version, and why accuracy is not reported |
+| Pipeline | The data quality grid, one column for each batch |
+| Account | One account's history, its features, and the alerts raised against it |
+
+Three rules the charts follow:
+
+1. **One y-axis.** Alerts are a subset of transactions, so they share the scale. A second axis
+   would draw a 1% rate at the same height as a 50% one.
+2. **A legend is always present for two series.** Identity never rests on colour alone.
+3. **The quality grid carries a glyph, not only a colour.** Status good and status critical
+   measure 4.1 apart under deuteranopia, so the tick and the cross carry the meaning.
+
+The palette is the validated dark instance: series blue `#3987e5` and orange `#d95926` on
+surface `#1a1a19`, which measure CVD Delta E 26.8 and normal-vision 31.8 apart.
 
 ## Alerts, and the loop that closes
 

@@ -20,3 +20,8 @@ data/lake/
 # Lambda build output. Exported from the model registry, not written by hand.
 build/
 lambda_fn/model.json
+
+# The React build output. Built by `cd web && npm run build`.
+api/static/
+web/node_modules/
+web/dist/
