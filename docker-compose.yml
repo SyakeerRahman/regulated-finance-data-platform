@@ -30,6 +30,8 @@ services:
 
   postgres:
     image: postgres:18-alpine
+    # Named, so `docker ps` on a machine running several projects says which one holds 5440.
+    container_name: finplat-postgres
     environment:
       POSTGRES_USER: finplat
       POSTGRES_PASSWORD: finplat
