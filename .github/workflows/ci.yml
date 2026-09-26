@@ -26,3 +26,22 @@ jobs:
 
       - name: Test
         run: uv run pytest -q
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.5
+
+      - name: Format
+        run: terraform -chdir=terraform fmt -check -recursive
+
+      # No AWS credentials. validate checks the configuration itself, which is all that can be
+      # checked without an account, and it catches a typed resource name before an apply does.
+      - name: Validate
+        run: |
+          terraform -chdir=terraform init -backend=false
+          terraform -chdir=terraform validate

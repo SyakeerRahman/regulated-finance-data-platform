@@ -16,3 +16,7 @@ build/
 data/downloads/
 # Delta tables written by the pipeline
 data/lake/
+
+# Lambda build output. Exported from the model registry, not written by hand.
+build/
+lambda_fn/model.json

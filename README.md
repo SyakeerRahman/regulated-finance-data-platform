@@ -29,8 +29,13 @@ regulated-finance-data-platform/
     train.py                # fit a model on the labels known by a cutoff date
     registry.py             # list the model versions, promote one to production
     features.py             # the one definition of a feature, batch and live
+    domain.py               # the vocabulary. Imports nothing, so the Lambda can carry it
+    export.py               # the live model as plain JSON, for the Lambda
     run.py                  # one day without Airflow
   api/                      # the live path: generate, score, stream to the browser
+  lambda_fn/                # AWS Lambda: score one transaction, standard library only
+  terraform/                # the Lambda, its role, its log group, its URL
+  scripts/                  # build the Lambda zip
   dags/                     # Airflow DAGs. Thin: each task calls finplat
   tests/                    # pytest, against a temporary lake
   docs/                     # the brief
@@ -149,3 +154,29 @@ events. Three rules hold it to the batch path:
 
 Measured at 50 transactions each second: 0.93% of rows raise an alert, against a 1.5% fraud
 rate.
+
+## The Lambda scores without XGBoost
+
+A zip Lambda has 50 MB zipped and 250 MB unzipped. XGBoost and its shared library spend most of
+that on their own, and importing them costs seconds on a cold start.
+
+A gradient boosted tree is only a list of if-then branches. So `finplat/export.py` writes the
+300 trees as JSON, and `lambda_fn/scorer.py` walks them in about 60 lines of standard library.
+
+| | Value |
+| --- | ----- |
+| Package | 115 KB |
+| Third-party dependencies | none |
+| Cold import | 64 ms |
+| One score | 0.9 ms |
+
+Two implementations of one model is the shape of a silent production bug, so
+`tests/test_lambda.py` scores the same 295 rows through the Lambda scorer and through XGBoost,
+and asserts they agree to 1e-6.
+
+The Lambda holds no state. The caller sends the account history, because reading the lake on
+every request would cost more than the score is worth.
+
+Deployment is in [terraform/README.md](terraform/README.md). It creates one Lambda, one role,
+one log group and one Function URL. There is no API Gateway, no ECR and no S3 bucket, so nothing
+starts to charge after 12 months.

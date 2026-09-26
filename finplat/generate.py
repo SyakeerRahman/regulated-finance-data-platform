@@ -5,11 +5,8 @@ from datetime import UTC, date, datetime
 import numpy as np
 import pandas as pd
 
-HOME_COUNTRY = "MY"
-ABROAD = ["SG", "TH", "ID", "GB", "US", "NG"]
-CATEGORIES = ["grocery", "fuel", "dining", "travel", "electronics", "online_gaming", "jewellery"]
-RISKY_CATEGORIES = {"electronics", "online_gaming", "jewellery"}
-CHANNELS = ["chip", "contactless", "online"]
+from finplat.domain import ABROAD, CATEGORIES, CHANNELS, HOME_COUNTRY, RISKY_CATEGORIES
+
 ACCOUNTS = 40_000
 FRAUD_RATE = 0.015
 

@@ -6,23 +6,22 @@ then sees different numbers in production than it saw in training. So the rule s
 tests is that both must agree row for row.
 """
 
-import numpy as np
-import pandas as pd
+from datetime import datetime
 
-from finplat.generate import HOME_COUNTRY, RISKY_CATEGORIES
+from finplat.domain import FEATURE_COLUMNS, HOME_COUNTRY, RISKY_CATEGORIES
 
-# The order is part of the contract. XGBoost reads a positional matrix, so a swapped pair of
-# columns is silent and wrong.
-FEATURE_COLUMNS = [
-    "amount",
-    "hour",
-    "is_night",
-    "is_abroad",
-    "is_online",
-    "is_risky_category",
-    "amount_vs_account",
-    "prior_transactions",
-]
+__all__ = ["FEATURE_COLUMNS", "AccountHistory", "frame_features", "hour_of", "row_features"]
+
+
+def hour_of(ts) -> int:
+    """The hour of a timestamp, whatever shape it arrives in.
+
+    The live path holds a pandas Timestamp. A Lambda receives a string over HTTP and must not
+    import pandas to read one field out of it.
+    """
+    if hasattr(ts, "hour"):
+        return int(ts.hour)
+    return datetime.fromisoformat(str(ts)).hour
 
 
 def row_features(transaction: dict, prior_count: int, prior_mean: float | None) -> dict:
@@ -31,12 +30,12 @@ def row_features(transaction: dict, prior_count: int, prior_mean: float | None) 
     `prior_count` and `prior_mean` describe the account up to but not including this transaction.
     A caller that passes the account's average including this row leaks the present into the past.
     """
-    ts = pd.Timestamp(transaction["ts"])
+    hour = hour_of(transaction["ts"])
     amount = float(transaction["amount"])
     return {
         "amount": amount,
-        "hour": ts.hour,
-        "is_night": ts.hour < 6,
+        "hour": hour,
+        "is_night": hour < 6,
         "is_abroad": transaction["country"] != HOME_COUNTRY,
         "is_online": transaction["channel"] == "online",
         "is_risky_category": transaction["merchant_category"] in RISKY_CATEGORIES,
@@ -46,8 +45,13 @@ def row_features(transaction: dict, prior_count: int, prior_mean: float | None) 
     }
 
 
-def frame_features(tx: pd.DataFrame) -> pd.DataFrame:
+def frame_features(tx):
     """Features for a whole table, in one pass. `tx` must already be in time order."""
+    # Imported here and not at the top, so the Lambda package can carry this module without
+    # numpy and pandas. A zip Lambda has 250 MB unzipped, and those two would spend most of it.
+    import numpy as np
+    import pandas as pd
+
     by_account = tx.groupby("account_id")["amount"]
     earlier = by_account.cumcount()
     # np.nan, not pd.NA: pd.NA in an integer series makes the column object dtype, and the
@@ -87,7 +91,7 @@ class AccountHistory:
         self._count[account_id] = self._count.get(account_id, 0) + 1
         self._total[account_id] = self._total.get(account_id, 0.0) + amount
 
-    def warm(self, transactions: pd.DataFrame) -> int:
+    def warm(self, transactions) -> int:
         """Seed the history from what the lake already holds.
 
         A scorer that starts cold sees every account as brand new, so amount_vs_account is 1.0 on
