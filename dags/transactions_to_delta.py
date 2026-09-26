@@ -4,6 +4,7 @@ from airflow.sdk import dag, get_current_context, task
 
 from finplat.generate import generate
 from finplat.pipeline import build_gold, load_bronze, load_labels, refine_silver
+from finplat.quality import record, run_checks
 from finplat.settings import get_settings
 
 
@@ -34,10 +35,21 @@ def transactions_to_delta():
         return refine_silver(get_settings().lake_uri, batch_id)
 
     @task
+    def quality(batch_id: str) -> dict[str, int]:
+        """Stop here when the batch is wrong. Gold then keeps yesterday, which is correct data,
+        rather than being rebuilt from a feed that broke overnight."""
+        lake = get_settings().lake_uri
+        report = run_checks(lake, batch_id)
+        record(lake, report)
+        report.raise_on_critical()
+        return report.summary()
+
+    @task
     def gold() -> int:
         return build_gold(get_settings().lake_uri)
 
-    silver(bronze()) >> gold()
+    batch_id = bronze()
+    silver(batch_id) >> quality(batch_id) >> gold()
 
 
 transactions_to_delta()

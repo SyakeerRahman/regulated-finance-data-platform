@@ -31,6 +31,7 @@ regulated-finance-data-platform/
     features.py             # the one definition of a feature, batch and live
     domain.py               # the vocabulary. Imports nothing, so the Lambda can carry it
     export.py               # the live model as plain JSON, for the Lambda
+    quality.py              # the checks that stop a bad batch reaching gold
     run.py                  # one day without Airflow
   api/                      # the live path: generate, score, stream to the browser
   lambda_fn/                # AWS Lambda: score one transaction, standard library only
@@ -73,6 +74,7 @@ regulated-finance-data-platform/
 | `silver/transactions` | `refine_silver` | Valid rows, one per `transaction_id`, upserted with MERGE |
 | `silver/labels` | `load_labels` | The verdict on each transaction, and the date it was known |
 | `gold/transaction_features` | `build_gold` | Model features. Account history uses earlier rows only |
+| `quality/checks` | `record` | One row per check per batch, with the value and the threshold |
 
 A rerun of a batch replaces that batch. It does not add a second copy.
 
@@ -102,6 +104,30 @@ Three limits follow, and they apply to every result in this repository:
    customer call can arrive within hours.
 3. No public dataset of labelled card transactions exists, because card scheme rules and privacy
    law forbid it. Synthetic data is the only option, not a shortcut.
+
+## Data quality
+
+A pipeline rarely fails loudly. It usually succeeds and produces rubbish. So the checks that
+matter are not the row rules in `refine_silver`. They are the ones that compare today against
+the days before it.
+
+| Check | Rule | Severity |
+| ----- | ---- | -------- |
+| schema | Every column is present with the expected type | Critical |
+| freshness | The newest row landed in the last 25 hours, and is not dated ahead | Critical |
+| volume | Today is within 50% of the average of the last 7 batches | Critical |
+| quarantine rate | Below 5% | Warning |
+| duplicate rate | Below 3% | Warning |
+| amount median | Within 3x of the median of the last 7 batches | Warning |
+
+A critical failure stops the DAG between silver and gold. Gold then keeps yesterday, which is
+correct data, instead of being rebuilt from a feed that broke overnight.
+
+Every check reads the tables. None takes a count from `refine_silver`, because a check that
+trusts the process it checks is not a check.
+
+Measured: a batch of 808 rows against a 3-batch average of 20,200 stops the run, and gold stays
+at 59,523 rows.
 
 ## The model
 

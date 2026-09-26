@@ -17,7 +17,7 @@ LABELS = "silver/labels"
 GOLD = "gold/transaction_features"
 
 
-def _replace_batch(path: str, frame: pd.DataFrame, batch_id: str) -> None:
+def replace_batch(path: str, frame: pd.DataFrame, batch_id: str) -> None:
     """Write one batch, replacing any earlier copy of it, and leave other batches alone."""
     # Without the reset, pandas writes its own row numbers into the table as __index_level_0__.
     frame = frame.reset_index(drop=True)
@@ -30,13 +30,13 @@ def _replace_batch(path: str, frame: pd.DataFrame, batch_id: str) -> None:
 def load_bronze(lake: str, batch: pd.DataFrame, batch_id: str) -> int:
     """Land the batch exactly as received. Nothing is fixed here, so an auditor can see the original."""
     frame = batch.assign(batch_id=batch_id, ingested_at=pd.Timestamp.now(tz="UTC"))
-    _replace_batch(f"{lake}/{BRONZE}", frame, batch_id)
+    replace_batch(f"{lake}/{BRONZE}", frame, batch_id)
     return len(frame)
 
 
 def load_labels(lake: str, labels: pd.DataFrame, batch_id: str) -> int:
     """Store the verdicts. Each one carries the date a bank would really learn it."""
-    _replace_batch(f"{lake}/{LABELS}", labels.assign(batch_id=batch_id), batch_id)
+    replace_batch(f"{lake}/{LABELS}", labels.assign(batch_id=batch_id), batch_id)
     return len(labels)
 
 
@@ -57,7 +57,7 @@ def refine_silver(lake: str, batch_id: str) -> dict[str, int]:
     accepted = bronze[reason == ""].drop_duplicates("transaction_id").reset_index(drop=True)
 
     if len(rejected):
-        _replace_batch(f"{lake}/{QUARANTINE}", rejected, batch_id)
+        replace_batch(f"{lake}/{QUARANTINE}", rejected, batch_id)
 
     silver = f"{lake}/{SILVER}"
     if DeltaTable.is_deltatable(silver):

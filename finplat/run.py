@@ -8,6 +8,7 @@ from datetime import date
 
 from finplat.generate import generate
 from finplat.pipeline import build_gold, load_bronze, load_labels, refine_silver
+from finplat.quality import record, run_checks
 from finplat.settings import get_settings
 
 
@@ -18,6 +19,13 @@ def main(day: date) -> None:
     print(f"bronze  {load_bronze(settings.lake_uri, transactions, batch_id)} rows landed for {batch_id}")
     print(f"labels  {load_labels(settings.lake_uri, labels, batch_id)} verdicts stored")
     print(f"silver  {refine_silver(settings.lake_uri, batch_id)}")
+
+    report = run_checks(settings.lake_uri, batch_id)
+    record(settings.lake_uri, report)
+    for check in report.checks:
+        print(f"        {'pass' if check.passed else check.severity.upper():<8} {check.name:<16} {check.detail}")
+    report.raise_on_critical()
+
     print(f"gold    {build_gold(settings.lake_uri)} feature rows")
 
 
