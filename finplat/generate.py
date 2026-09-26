@@ -18,6 +18,39 @@ DUPLICATE_RATE = 0.01
 MISSING_ACCOUNT_RATE = 0.005
 BAD_AMOUNT_RATE = 0.003
 
+# Normal spending follows a daily rhythm: a trough after midnight, a peak in the evening. Night
+# hours keep about 3.5% of the day's legitimate volume. An earlier version drew every honest hour
+# from 6 to 23, so nothing legitimate happened at 3am, is_night became a perfect predictor, and
+# the model looked far better than the problem allows.
+HOURLY_WEIGHT = np.array(
+    [
+        0.30,
+        0.20,
+        0.15,
+        0.15,
+        0.25,
+        0.50,
+        1.00,
+        1.60,
+        2.00,
+        2.20,
+        2.40,
+        2.80,
+        3.20,
+        3.00,
+        2.60,
+        2.60,
+        2.80,
+        3.20,
+        3.60,
+        3.40,
+        2.80,
+        2.00,
+        1.20,
+        0.60,
+    ]
+)
+
 # A card scheme gives the holder a fixed window to dispute a charge. Fraud is confirmed somewhere
 # inside it; everything else is only known to be clean once the window shuts.
 CHARGEBACK_DAYS = (30, 91)
@@ -41,7 +74,8 @@ def generate(day: date, rows: int, seed: int, accounts: int = ACCOUNTS) -> tuple
     # Fraud spends more, at night, online, abroad, in categories that resell well.
     amount = account_level[account] * rng.lognormal(0.0, 0.5, rows)
     amount = np.where(is_fraud, amount * rng.uniform(3, 12, rows), amount)
-    hour = np.where(is_fraud & (rng.random(rows) < 0.6), rng.integers(0, 6, rows), rng.integers(6, 24, rows))
+    ordinary_hour = rng.choice(24, rows, p=HOURLY_WEIGHT / HOURLY_WEIGHT.sum())
+    hour = np.where(is_fraud & (rng.random(rows) < 0.6), rng.integers(0, 6, rows), ordinary_hour)
     abroad = rng.random(rows) < np.where(is_fraud, 0.55, 0.05)
     country = np.where(abroad, rng.choice(ABROAD, rows), HOME_COUNTRY)
     risky = rng.random(rows) < np.where(is_fraud, 0.7, 0.1)

@@ -2381,6 +2381,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "deltalake" },
+    { name = "fastapi" },
     { name = "mlflow" },
     { name = "numpy" },
     { name = "pandas" },
@@ -2400,6 +2401,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deltalake", specifier = "==1.6.3" },
+    { name = "fastapi", specifier = "==0.141.1" },
     { name = "mlflow", specifier = "==3.16.1" },
     { name = "numpy", specifier = "==2.5.3" },
     { name = "pandas", specifier = "==3.0.5" },

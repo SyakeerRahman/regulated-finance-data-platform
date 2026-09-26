@@ -61,6 +61,21 @@ def live_version(tracking_uri: str) -> str | None:
         return None
 
 
+def production_threshold(tracking_uri: str, fallback: float = 0.5) -> float:
+    """The score above which the live model raises an alert.
+
+    The threshold belongs to the model, not to the service. Training picks it from the
+    precision-recall curve and logs it, so a promotion carries its own alert rate with it. A
+    number typed into the API instead would drift away from the model at the first retrain.
+    """
+    client = _client(tracking_uri)
+    try:
+        version = client.get_model_version_by_alias(REGISTERED_MODEL, PRODUCTION)
+    except mlflow.exceptions.MlflowException:
+        return fallback
+    return float(client.get_run(version.run_id).data.params.get("threshold", fallback))
+
+
 def load_production(tracking_uri: str):
     """The live model, as the classifier itself.
 

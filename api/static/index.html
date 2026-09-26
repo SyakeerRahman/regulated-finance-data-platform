@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>finplat live</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
+          --alert:#f85149; --ok:#3fb950; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  header { padding:16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  h1 { font-size:16px; margin:0 12px 0 0; font-weight:600; }
+  button, select { background:var(--panel); color:var(--text); border:1px solid var(--line);
+                   border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--dim); }
+  .stats { display:flex; gap:24px; margin-left:auto; }
+  .stat b { display:block; font-size:20px; font-weight:600; }
+  .stat span { color:var(--dim); font-size:11px; text-transform:uppercase; }
+  main { padding:16px; }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; color:var(--dim); font-weight:500; font-size:11px; text-transform:uppercase;
+       padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; white-space:nowrap; }
+  tr.alert td { background:rgba(248,81,73,.12); }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .score { font-weight:600; }
+  .alert .score { color:var(--alert); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--dim); display:inline-block; }
+  .dot.on { background:var(--ok); }
+  @media (max-width:640px){ .hide-sm { display:none; } .stats { width:100%; margin:0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>finplat live</h1>
+  <span class="dot" id="dot"></span>
+  <button id="toggle">Start</button>
+  <select id="rate">
+    <option value="1" selected>1 / sec</option>
+    <option value="3">3 / sec</option>
+    <option value="10">10 / sec</option>
+    <option value="50">50 / sec (demo)</option>
+  </select>
+  <div class="stats">
+    <div class="stat"><b id="scored">0</b><span>scored</span></div>
+    <div class="stat"><b id="alerts">0</b><span>alerts</span></div>
+    <div class="stat"><b id="model">-</b><span>model</span></div>
+  </div>
+</header>
+<main>
+  <table>
+    <thead><tr>
+      <th>time</th><th>account</th><th class="num">amount</th>
+      <th class="hide-sm">country</th><th class="hide-sm">channel</th><th class="hide-sm">category</th>
+      <th class="num">vs account</th><th class="num">score</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let running = false, scored = 0, alerts = 0;
+
+function addRow(r) {
+  const tr = document.createElement("tr");
+  if (r.alert) tr.className = "alert";
+  tr.innerHTML = `
+    <td>${r.ts.slice(11,19)}</td>
+    <td>${r.account_id}</td>
+    <td class="num">${r.amount.toFixed(2)}</td>
+    <td class="hide-sm">${r.country}</td>
+    <td class="hide-sm">${r.channel}</td>
+    <td class="hide-sm">${r.merchant_category}</td>
+    <td class="num">${r.amount_vs_account.toFixed(2)}x</td>
+    <td class="num score">${r.score.toFixed(3)}</td>`;
+  $("rows").prepend(tr);
+  while ($("rows").children.length > 100) $("rows").lastChild.remove();
+  $("scored").textContent = ++scored;
+  if (r.alert) $("alerts").textContent = ++alerts;
+}
+
+function setRunning(on) {
+  running = on;
+  $("toggle").textContent = on ? "Stop" : "Start";
+  $("dot").className = on ? "dot on" : "dot";
+}
+
+$("toggle").onclick = async () => {
+  const path = running ? "/api/stop" : `/api/start?rate=${$("rate").value}`;
+  const res = await fetch(path, { method: "POST" });
+  setRunning((await res.json()).running);
+};
+
+$("rate").onchange = async () => {
+  if (running) await fetch(`/api/start?rate=${$("rate").value}`, { method: "POST" });
+};
+
+fetch("/api/state").then(r => r.json()).then(s => {
+  setRunning(s.running);
+  scored = s.scored; alerts = s.alerts;
+  $("scored").textContent = scored;
+  $("alerts").textContent = alerts;
+  $("model").textContent = s.model_version ? "v" + s.model_version : "none";
+  s.recent.slice().reverse().forEach(r => { scored--; if (r.alert) alerts--; addRow(r); });
+});
+
+new EventSource("/api/stream").onmessage = e => addRow(JSON.parse(e.data));
+</script>
+</body>
+</html>

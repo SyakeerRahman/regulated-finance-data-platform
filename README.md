@@ -28,7 +28,9 @@ regulated-finance-data-platform/
     pipeline.py             # bronze, silver (quarantine + merge + labels), gold
     train.py                # fit a model on the labels known by a cutoff date
     registry.py             # list the model versions, promote one to production
+    features.py             # the one definition of a feature, batch and live
     run.py                  # one day without Airflow
+  api/                      # the live path: generate, score, stream to the browser
   dags/                     # Airflow DAGs. Thin: each task calls finplat
   tests/                    # pytest, against a temporary lake
   docs/                     # the brief
@@ -54,6 +56,8 @@ regulated-finance-data-platform/
 6. Train a model: `uv run python -m finplat.train 2027-01-01`
 7. Promote it: `uv run python -m finplat.registry list`, then `... promote <version>`
 8. Open http://localhost:8096 to compare the runs.
+9. Start the live page: `uv run uvicorn api.main:app --port 8097`
+10. Open http://localhost:8097 and press Start.
 
 ## The tables
 
@@ -86,6 +90,9 @@ Three limits follow, and they apply to every result in this repository:
 
 1. The model scores well because the pattern is clean and deliberate. Real fraud overlaps with
    real spending, and a real fraudster changes tactics as soon as a rule catches them.
+   An earlier version was worse: it drew every honest hour from 6 to 23, so nothing legitimate
+   happened at 3am and `is_night` was the answer rather than a signal. Honest hours now follow a
+   daily curve, and night holds about 3.5% of legitimate volume and 20.9% fraud.
 2. The label delay is a simplification. A real chargeback window is often 120 days, and a
    customer call can arrive within hours.
 3. No public dataset of labelled card transactions exists, because card scheme rules and privacy
@@ -123,3 +130,22 @@ clean fraud pattern on purpose, so a high score measures the data and not the mo
 | ---- | ------- |
 | 8095 | Airflow |
 | 8096 | MLflow |
+| 8097 | The live page |
+
+## The live path
+
+`api/main.py` invents a transaction, scores it, and pushes it to the browser over server-sent
+events. Three rules hold it to the batch path:
+
+1. **One feature definition.** `finplat/features.py` holds the arithmetic. `build_gold` calls
+   `frame_features` for a whole table and the scorer calls `row_features` for one transaction.
+   A test replays 3,000 rows through both and asserts every column agrees.
+2. **The history is warmed from the lake.** A scorer that starts cold treats every account as
+   new, so `amount_vs_account` is 1.0 on every row and the model scores a distribution it never
+   trained on.
+3. **The threshold comes from the model.** Training picks it from the precision-recall curve and
+   logs it. The service reads it from the registry. A number typed into the service drifts away
+   from the model at the first retrain.
+
+Measured at 50 transactions each second: 0.93% of rows raise an alert, against a 1.5% fraud
+rate.

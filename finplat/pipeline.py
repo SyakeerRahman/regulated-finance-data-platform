@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from deltalake import DeltaTable, write_deltalake
 
-from finplat.generate import HOME_COUNTRY, RISKY_CATEGORIES
+from finplat.features import frame_features
 
 BRONZE = "bronze/transactions"
 QUARANTINE = "silver/quarantine"
@@ -82,29 +82,8 @@ def refine_silver(lake: str, batch_id: str) -> dict[str, int]:
 def build_gold(lake: str) -> int:
     """Model features for every silver transaction, rebuilt in full. No target column lives here."""
     tx = DeltaTable(f"{lake}/{SILVER}").to_pandas().sort_values(["ts", "transaction_id"], ignore_index=True)
-
-    # The account's average before this transaction, never after it. A feature that sees the future
-    # scores well in training and fails in production.
-    by_account = tx.groupby("account_id")["amount"]
-    earlier = by_account.cumcount()
-    prior_mean = (by_account.cumsum() - tx["amount"]) / earlier.replace(0, np.nan)
-
-    gold = pd.DataFrame(
-        {
-            "transaction_id": tx["transaction_id"],
-            "account_id": tx["account_id"],
-            "ts": tx["ts"],
-            "amount": tx["amount"],
-            "hour": tx["ts"].dt.hour.astype("int32"),
-            "is_night": tx["ts"].dt.hour < 6,
-            "is_abroad": tx["country"] != HOME_COUNTRY,
-            "is_online": tx["channel"] == "online",
-            "is_risky_category": tx["merchant_category"].isin(RISKY_CATEGORIES),
-            # 1.0 for an account's first transaction: no history is not the same as unusual.
-            "amount_vs_account": (tx["amount"] / prior_mean).fillna(1.0),
-            "prior_transactions": earlier.astype("int64"),
-        }
-    )
+    # The same arithmetic the live scorer runs. One definition, so the two cannot drift apart.
+    gold = pd.concat([tx[["transaction_id", "account_id", "ts"]], frame_features(tx)], axis=1)
     write_deltalake(f"{lake}/{GOLD}", gold, mode="overwrite", schema_mode="overwrite")
     return len(gold)
 
