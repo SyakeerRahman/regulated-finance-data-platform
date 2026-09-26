@@ -27,3 +27,23 @@ services:
       - "8096:5000"
     volumes:
       - ./data/mlflow:/mlflow
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: finplat
+      POSTGRES_PASSWORD: finplat
+      POSTGRES_DB: finplat
+    ports:
+      - "5440:5432"
+    volumes:
+      # Postgres 18 wants the mount one level up. A mount at /data leaves the real data
+      # directory outside the volume and the container refuses to start.
+      - finplat-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finplat"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  finplat-pgdata:

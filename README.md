@@ -32,6 +32,8 @@ regulated-finance-data-platform/
     domain.py               # the vocabulary. Imports nothing, so the Lambda can carry it
     export.py               # the live model as plain JSON, for the Lambda
     quality.py              # the checks that stop a bad batch reaching gold
+    explain.py              # SHAP, turned into a sentence an analyst reads
+    alerts.py               # alerts and analyst decisions, in Postgres
     run.py                  # one day without Airflow
   api/                      # the live path: generate, score, stream to the browser
   lambda_fn/                # AWS Lambda: score one transaction, standard library only
@@ -162,6 +164,7 @@ clean fraud pattern on purpose, so a high score measures the data and not the mo
 | 8095 | Airflow |
 | 8096 | MLflow |
 | 8097 | The live page |
+| 5440 | Postgres |
 
 ## The live path
 
@@ -180,6 +183,39 @@ events. Three rules hold it to the batch path:
 
 Measured at 50 transactions each second: 0.93% of rows raise an alert, against a 1.5% fraud
 rate.
+
+## Alerts, and the loop that closes
+
+An alert is a row in Postgres, not in Delta and not in Redis. It has to survive a restart, be
+fetched by its own id, and change state when somebody presses a button.
+
+Each alert carries its reason. SHAP reports how much each feature moved the score, and
+`finplat/explain.py` turns the top three into a sentence:
+
+```text
+#8  ACC39002  MYR 153.14  SG/online/electronics
+  score 1.000 (threshold 0.902), model v3, status open
+  WHY: 18x this account's normal spend, a purchase outside Malaysia, and a category that
+       resells easily.
+  contributions: {'amount_vs_account': 4.36, 'is_abroad': 2.36, 'is_risky_category': 1.56}
+```
+
+SHAP walks every tree, so it runs for an alert and not for the 99% of rows that pass.
+
+An analyst then confirms the alert or calls it a false positive. That decision is the same kind
+of fact as a chargeback, so it goes into `silver/labels` with `label_source = analyst` and the
+next retrain reads it. Measured end to end: two decisions, and a retrain run today sees exactly
+those two rows, because every other label is still inside its dispute window.
+
+## The live feed writes to the lake in batches
+
+Each Delta write makes a parquet file and a log entry. One write per transaction would leave
+86,400 files a day and a table nothing can open. So the scorer buffers and flushes every 2,000
+rows or 60 seconds, whichever comes first.
+
+The live feed owns its own partition, `live-<date>`. The daily DAG owns the partition named
+after the date, and two writers on one partition is how a replace deletes the other writer's
+rows.
 
 ## The Lambda scores without XGBoost
 

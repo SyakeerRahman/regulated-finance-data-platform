@@ -27,6 +27,22 @@ def replace_batch(path: str, frame: pd.DataFrame, batch_id: str) -> None:
         write_deltalake(path, frame, partition_by=["batch_id"])
 
 
+def append_bronze(lake: str, rows: pd.DataFrame, batch_id: str) -> int:
+    """Add rows to a bronze partition without replacing what is already there.
+
+    The live scorer uses this. It cannot use `replace_batch`, because its partition grows all
+    day and a replace would drop every row written before the last flush. Duplicates are fine
+    in bronze: it records what arrived, and silver removes repeats by `transaction_id`.
+    """
+    frame = rows.assign(batch_id=batch_id, ingested_at=pd.Timestamp.now(tz="UTC")).reset_index(drop=True)
+    path = f"{lake}/{BRONZE}"
+    if DeltaTable.is_deltatable(path):
+        write_deltalake(path, frame, mode="append")
+    else:
+        write_deltalake(path, frame, partition_by=["batch_id"])
+    return len(frame)
+
+
 def load_bronze(lake: str, batch: pd.DataFrame, batch_id: str) -> int:
     """Land the batch exactly as received. Nothing is fixed here, so an auditor can see the original."""
     frame = batch.assign(batch_id=batch_id, ingested_at=pd.Timestamp.now(tz="UTC"))
