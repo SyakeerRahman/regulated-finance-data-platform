@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     lake_uri: str = Field(min_length=1)
 
     rows_per_batch: int = Field(default=20_000, gt=0)
+    # About 2 transactions for each account each day. Too few accounts and every account's
+    # average settles within minutes, which makes amount_vs_account say nothing.
+    accounts: int = Field(default=40_000, gt=0)
     # The same seed and day always give the same batch, so a rerun is comparable to the first run.
     seed: int = 7
 

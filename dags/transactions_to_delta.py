@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from airflow.sdk import dag, get_current_context, task
 
 from finplat.generate import generate
-from finplat.pipeline import build_gold, load_bronze, refine_silver
+from finplat.pipeline import build_gold, load_bronze, load_labels, refine_silver
 from finplat.settings import get_settings
 
 
@@ -23,7 +23,10 @@ def transactions_to_delta():
         day = (context.get("logical_date") or context["dag_run"].run_after).date()
         settings = get_settings()
         batch_id = day.isoformat()
-        load_bronze(settings.lake_uri, generate(day, settings.rows_per_batch, settings.seed), batch_id)
+        transactions, labels = generate(day, settings.rows_per_batch, settings.seed, settings.accounts)
+        load_bronze(settings.lake_uri, transactions, batch_id)
+        # The verdicts land with the batch but are dated weeks later, so training must filter them.
+        load_labels(settings.lake_uri, labels, batch_id)
         return batch_id
 
     @task

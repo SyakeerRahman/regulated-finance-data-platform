@@ -1,17 +1,33 @@
 from datetime import date
 
+import pandas as pd
 import pytest
 from deltalake import DeltaTable
 
 from finplat.generate import generate
-from finplat.pipeline import BRONZE, GOLD, QUARANTINE, SILVER, build_gold, load_bronze, refine_silver
+from finplat.pipeline import (
+    BRONZE,
+    GOLD,
+    LABELS,
+    QUARANTINE,
+    SILVER,
+    build_gold,
+    load_bronze,
+    load_labels,
+    refine_silver,
+    training_frame,
+)
 
 DAY = date(2026, 9, 1)
+# Small enough that accounts build a history the features can compare against.
+ACCOUNTS = 2_000
 
 
 def run_day(lake: str, day: date, rows: int = 5_000) -> dict[str, int]:
     batch_id = day.isoformat()
-    load_bronze(lake, generate(day, rows, seed=7), batch_id)
+    transactions, labels = generate(day, rows, seed=7, accounts=ACCOUNTS)
+    load_bronze(lake, transactions, batch_id)
+    load_labels(lake, labels, batch_id)
     counts = refine_silver(lake, batch_id)
     build_gold(lake)
     return counts
@@ -21,13 +37,45 @@ def rows(lake: str, table: str) -> int:
     return DeltaTable(f"{lake}/{table}").to_pyarrow_table().num_rows
 
 
+def columns(lake: str, table: str) -> set[str]:
+    return set(DeltaTable(f"{lake}/{table}").to_pandas().columns)
+
+
 @pytest.fixture
 def lake(tmp_path) -> str:
     return str(tmp_path / "lake")
 
 
 def test_generate_is_repeatable():
-    assert generate(DAY, 500, seed=7).equals(generate(DAY, 500, seed=7))
+    first_tx, first_labels = generate(DAY, 500, seed=7, accounts=ACCOUNTS)
+    second_tx, second_labels = generate(DAY, 500, seed=7, accounts=ACCOUNTS)
+    assert first_tx.equals(second_tx)
+    assert first_labels.equals(second_labels)
+
+
+def test_no_table_carries_the_answer_or_the_pandas_index(lake):
+    run_day(lake, DAY)
+    for table in (BRONZE, QUARANTINE, SILVER, GOLD):
+        assert "is_fraud" not in columns(lake, table)
+        assert "__index_level_0__" not in columns(lake, table)
+    assert "is_fraud" in columns(lake, LABELS)
+
+
+def test_a_label_arrives_after_its_transaction(lake):
+    run_day(lake, DAY)
+    labels = DeltaTable(f"{lake}/{LABELS}").to_pandas()
+    day_start = pd.Timestamp(DAY, tz="UTC")
+    assert (labels["labelled_at"] >= day_start + pd.Timedelta(days=30)).all()
+    assert set(labels["label_source"]) == {"chargeback", "dispute window closed"}
+
+
+def test_training_drops_transactions_nobody_has_judged_yet(lake):
+    run_day(lake, DAY)
+    early = training_frame(lake, pd.Timestamp(DAY, tz="UTC") + pd.Timedelta(days=40))
+    late = training_frame(lake, pd.Timestamp(DAY, tz="UTC") + pd.Timedelta(days=120))
+    assert 0 < len(early) < len(late)
+    # Only fraud is confirmed inside the chargeback window, so the early set is almost all fraud.
+    assert early["is_fraud"].mean() > late["is_fraud"].mean()
 
 
 def test_every_received_row_is_accounted_for(lake):
@@ -53,9 +101,10 @@ def test_silver_has_no_duplicate_or_bad_rows(lake):
 
 def test_rerunning_a_batch_changes_nothing(lake):
     first = run_day(lake, DAY)
-    sizes = [rows(lake, t) for t in (BRONZE, QUARANTINE, SILVER, GOLD)]
+    tables = (BRONZE, QUARANTINE, SILVER, LABELS, GOLD)
+    sizes = [rows(lake, t) for t in tables]
     assert run_day(lake, DAY) == first
-    assert [rows(lake, t) for t in (BRONZE, QUARANTINE, SILVER, GOLD)] == sizes
+    assert [rows(lake, t) for t in tables] == sizes
 
 
 def test_a_second_day_adds_to_the_tables(lake):
@@ -84,8 +133,8 @@ def test_fraud_is_learnable_from_the_features(lake):
     # Night fraud comes before the day's other spending, so it needs earlier days as history.
     for day in (1, 2, 3):
         run_day(lake, date(2026, 9, day), rows=20_000)
-    gold = DeltaTable(f"{lake}/{GOLD}").to_pandas()
-    gold = gold[gold["ts"].dt.day == 3]
-    fraud, legit = gold[gold["is_fraud"]], gold[~gold["is_fraud"]]
+    known = training_frame(lake, pd.Timestamp("2027-01-01", tz="UTC"))
+    known = known[known["ts"].dt.day == 3]
+    fraud, legit = known[known["is_fraud"]], known[~known["is_fraud"]]
     assert fraud["amount_vs_account"].median() > 2 * legit["amount_vs_account"].median()
     assert fraud["is_abroad"].mean() > 3 * legit["is_abroad"].mean()
