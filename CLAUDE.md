@@ -1,5 +1,90 @@
-# regulated-finance-data-platform
+# CLAUDE.md
 
-Read `AGENTS.md` in this folder first. It is the source of truth for this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Read `AGENTS.md` first. It is the source of truth for the stack, the dependency policy, and the
+code style. This file adds only the commands and the architecture notes.
 The workspace rules are in `C:\Users\User\Project\CLAUDE.md`.
+
+## Commands
+
+| Task | Command |
+|---|---|
+| Install or sync the environment | `uv sync` |
+| All tests | `uv run pytest` |
+| One test file | `uv run pytest tests/test_pipeline.py` |
+| One test | `uv run pytest tests/test_pipeline.py::test_rerunning_a_batch_changes_nothing` |
+| Lint | `uv run ruff check .` |
+| Format | `uv run ruff format .` |
+| One day of the pipeline, no Airflow | `uv run python -m finplat.run 2026-09-01` |
+| Airflow | `docker compose up -d --build`, then http://localhost:8095 |
+| Rebuild the Airflow image after a dependency change | `docker compose build` |
+
+`.env` with `LAKE_URI=data/lake` must exist before any command that touches the lake. The settings
+class has no default for it, so a missing value stops startup.
+
+## Architecture
+
+`finplat` holds all the logic. Everything else calls it.
+
+- `generate.py` makes one day of synthetic transactions and injects broken rows on purpose
+  (`DUPLICATE_RATE`, `MISSING_ACCOUNT_RATE`, `BAD_AMOUNT_RATE`). Those constants are what gives the
+  silver layer work to do, and the tests assert that quarantine and duplicate counts are above zero.
+  A change to them can break tests that never mention them.
+- `pipeline.py` holds the three layer functions and the four table paths. Delta writes go through
+  `deltalake` (delta-rs). There is no Spark and no Spark session to set up.
+- `run.py` and `dags/transactions_to_delta.py` are two thin drivers over the same three functions.
+  A DAG task must stay a call into `finplat`. Put logic in the package, not in the DAG.
+
+Data flow: `generate` -> `load_bronze` -> `refine_silver` -> `build_gold`.
+
+## The idempotency contract
+
+Airflow retries tasks, so every step must leave the tables as one run would. Each layer keeps that
+promise a different way, and a change to one must keep its own method:
+
+- Bronze and quarantine: `_replace_batch` overwrites with the predicate `batch_id = '<id>'`, so a
+  rerun replaces that partition and leaves other batches alone.
+- Silver: a Delta `MERGE` on `transaction_id`, after `drop_duplicates` inside the batch.
+- Gold: a full rebuild with `mode="overwrite"`, read from the whole silver table.
+
+`test_rerunning_a_batch_changes_nothing` is the guard. Run it after any write-path change.
+
+Gold reads all of silver, so it is not per-batch. That is why the DAG sets `max_active_runs=1`:
+two concurrent runs would race on the silver merge and the gold rebuild.
+
+## Feature rules
+
+`build_gold` computes `amount_vs_account` from the account's mean of **earlier rows only**
+(`cumsum - amount` over `cumcount`). A feature that sees the same row or later rows leaks the
+future, scores well in training, and fails in production. `test_account_feature_uses_only_earlier_transactions`
+rebuilds the value by hand to check this. First transaction of an account is `1.0`, not null.
+
+## Determinism
+
+`generate` seeds from `[seed, day.toordinal()]`, and account spend levels seed from `seed` alone.
+The same day and seed always give the same batch. Tests depend on this, including
+`test_fraud_is_learnable_from_the_features`, which asserts statistical separation and needs three
+days of history to pass.
+
+## Docker notes
+
+The compose file mounts `./finplat` at `/opt/project/finplat` and sets `PYTHONPATH=/opt/project`.
+The package is not installed in the image, so a new module in `finplat` works without a rebuild,
+but a new third-party dependency needs it in `requirements-airflow.txt` and a `docker compose build`.
+Airflow's own pins stay in charge, so add only what the pipeline needs on top.
+
+## Project state
+
+The batch pipeline (Airflow + Delta Lake) is built. Everything else is not started.
+
+The plan changed on 2026-09-26 from a three-weekend batch demo to a live platform that stays
+online. Read `docs/brief.md` for the seven stages, the hard disk limits, and the done criteria,
+and `brain/decisions/2026-09-26-the-demo-must-be-alive-not-runnable.md` for why.
+
+Two known defects, both queued for stage A:
+
+- `is_fraud` sits on the transaction row. It moves to a separate `silver/labels` table with a
+  `labelled_at` delay. See `brain/decisions/2026-09-26-the-label-is-not-a-column-on-the-transaction.md`.
+- `silver/transactions` and `silver/quarantine` carry a stray `__index_level_0__` column, written
+  by accident from the pandas index.

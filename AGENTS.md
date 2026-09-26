@@ -9,16 +9,26 @@ states only the difference from those defaults.
 | Layer | Choice |
 |---|---|
 | Language | Python 3.12 |
-| Orchestration | Apache Airflow, in Docker Compose for weekends 1 and 2 |
+| Orchestration | Apache Airflow, in Docker Compose |
 | Storage | Delta Lake tables through `deltalake` (delta-rs). No Spark |
+| Hot store | Redis for recent rows. Postgres for alerts, decisions and vectors |
 | Model registry | MLflow tracking server |
-| Model | scikit-learn |
-| Serving | AWS Lambda, container image |
-| Infrastructure | Terraform for AWS. kind and Helm for local Kubernetes |
-| CI/CD | GitHub Actions |
+| Model | XGBoost and scikit-learn. SHAP for each prediction. Evidently for drift |
+| Serving | AWS Lambda, zip package. FastAPI on the server for the live path |
+| Frontend | React, Vite, Tailwind, shadcn/ui, Recharts |
+| AI | Claude API for narration and the agent. pgvector for retrieval |
+| Infrastructure | Terraform for AWS. Docker Compose on the shared HostHatch VPS, behind Cloudflare Access. kind and Helm for local Kubernetes |
+| Monitoring | Prometheus and Grafana |
+| CI/CD | GitHub Actions. Tests on each push, deploy on each merge |
+| Streaming | Kafka (Redpanda), deferred. The API takes the same interface until then |
 | Data | Synthetic transactions from `finplat/generate.py`. No real customer data |
 
-The stack is locked. Do not propose an alternative without a stated reason.
+Out of scope: Java, Greenplum, Jira, dbt, Spark, Flink, Airbyte, Feast, Great Expectations,
+LangChain, OpenMetadata, Kubernetes in production.
+
+The stack is locked. Do not propose an alternative without a stated reason. It last changed on
+2026-09-26. The reason is in `brain/decisions/2026-09-26-the-demo-must-be-alive-not-runnable.md`.
+The plan and the hard limits are in `docs/brief.md`.
 
 ## Repo layout
 
