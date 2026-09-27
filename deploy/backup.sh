@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nightly backup: Postgres and MLflow, copied off the server. Run from this folder by cron:
 #
-#     15 3 * * * cd /srv/finplat && ./backup.sh >> backups/backup.log 2>&1
+#     15 3 * * * cd /srv/finplat/deploy && ./backup.sh >> backups/backup.log 2>&1
 #
 # HostHatch support is slow, so a copy that lives only on the server is not a backup.
 #

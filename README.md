@@ -1,9 +1,11 @@
 # regulated-finance-data-platform
 
 A fraud-scoring data platform for a regulated finance setting. Airflow loads transactions into
-Delta Lake tables. MLflow trains and registers a fraud model. An AWS Lambda function scores
-transactions with the model. The stack runs on Kubernetes, and GitHub Actions tests each push.
-The data is synthetic. The brief is in [docs/brief.md](docs/brief.md).
+Delta Lake tables. MLflow trains and registers a fraud model. A live service scores each
+transaction and shows the alerts on a dashboard. An AWS Lambda function scores one transaction
+with the same model. GitHub Actions tests each push and publishes the container images. The
+server stack runs on Docker Compose. The data is synthetic. The brief is in
+[docs/brief.md](docs/brief.md).
 
 ## Stack
 
@@ -12,9 +14,10 @@ The data is synthetic. The brief is in [docs/brief.md](docs/brief.md).
 | Orchestration | Apache Airflow |
 | Storage | Delta Lake (delta-rs) |
 | Model registry | MLflow |
-| Serving | AWS Lambda |
-| Infrastructure | Terraform, Kubernetes (kind, Helm) |
-| CI/CD | GitHub Actions |
+| Live service | FastAPI and React, with Postgres for the alerts |
+| Serving, one transaction | AWS Lambda |
+| Infrastructure | Terraform for the Lambda, Docker Compose on one VPS |
+| CI/CD | GitHub Actions, with images in GitHub Container Registry |
 
 ## Repo layout
 
@@ -32,6 +35,7 @@ regulated-finance-data-platform/
     domain.py               # the vocabulary. Imports nothing, so the Lambda can carry it
     export.py               # the live model as plain JSON, for the Lambda
     quality.py              # the checks that stop a bad batch reaching gold
+    retention.py            # delete old batches, VACUUM, delete old Airflow logs
     explain.py              # SHAP, turned into a sentence an analyst reads
     alerts.py               # alerts and analyst decisions, in Postgres
     run.py                  # one day without Airflow
@@ -44,8 +48,17 @@ regulated-finance-data-platform/
   tests/                    # pytest, against a temporary lake
   docs/                     # the brief
   data/lake/                # Delta tables (gitignored)
-  Dockerfile                # Airflow image plus the pipeline libraries
-  docker-compose.yml        # Airflow standalone on port 8095
+  Dockerfile                # Airflow image, with finplat and dags copied in
+  Dockerfile.api            # the live service image, with the dashboard built in
+  docker-compose.yml        # the local stack: Airflow, MLflow, Postgres
+  deploy/                   # the server stack, and the scripts that run on the server
+    compose.yml             # Airflow, API, Postgres, MLflow, each with a memory limit
+    bootstrap.sh            # fill an empty server: 3 days, one training run, promote
+    backup.sh               # nightly: Postgres and MLflow, uploaded to a bucket
+    restore.sh              # put one backup back
+    s3.sh                   # upload and download, for any S3-compatible bucket
+    .env.example            # the settings the server needs
+  .github/workflows/ci.yml  # tests, Terraform checks, then the two images
 ```
 
 ## Prerequisites
@@ -53,21 +66,31 @@ regulated-finance-data-platform/
 | Tool | Version | Used for |
 | ---- | ------- | -------- |
 | uv | 0.12 or later | Python environment and tests |
-| Docker Desktop | 29 or later | Airflow |
+| Docker Desktop | 29 or later | Airflow, MLflow, Postgres |
+| Node.js | 24 or later | The dashboard build |
 
 ## Running locally
 
 1. Make the settings file: `echo LAKE_URI=data/lake > .env`
-2. Run the tests: `uv run pytest`
-3. Run one day without Airflow: `uv run python -m finplat.run 2026-09-01`
-4. Start Airflow and MLflow: `docker compose up -d --build`
-5. Open http://localhost:8095 and trigger `transactions_to_delta`.
+2. Install the Python environment: `uv sync`
+3. Start Airflow, MLflow and Postgres: `docker compose up -d --build`
+4. Run the tests: `uv run pytest`
+5. Run 3 days of the pipeline. The model needs 3 days of history.
+
+   ```bash
+   uv run python -m finplat.run 2026-09-24
+   uv run python -m finplat.run 2026-09-25
+   uv run python -m finplat.run 2026-09-26
+   ```
+
 6. Train a model: `uv run python -m finplat.train 2027-01-01`
-7. Promote it: `uv run python -m finplat.registry list`, then `... promote <version>`
-8. Open http://localhost:8096 to compare the runs.
+7. List the versions: `uv run python -m finplat.registry list`
+8. Promote one version: `uv run python -m finplat.registry promote <version>`
 9. Build the dashboard: `cd web && npm install && npm run build`
 10. Start the service: `uv run uvicorn api.main:app --port 8097`
 11. Open http://localhost:8097 and press Start.
+
+Airflow is at http://localhost:8095 and MLflow is at http://localhost:8096.
 
 `cd web && npm run dev` serves the dashboard on port 5173 with live reload and forwards `/api`
 to uvicorn. `npm run build` writes into `api/static`, which is gitignored, so one service
@@ -171,6 +194,166 @@ clean fraud pattern on purpose, so a high score measures the data and not the mo
 | 8096 | MLflow |
 | 8097 | The live page |
 | 5440 | Postgres |
+
+## CI and the images
+
+Each push to `main` runs three jobs in `.github/workflows/ci.yml`:
+
+1. **test**: lint, format check, and `pytest` against a Postgres service.
+2. **terraform**: `terraform fmt` and `terraform validate`, with no AWS account.
+3. **image**: builds the two images and pushes them to GitHub Container Registry. This job runs
+   only when the other two pass.
+
+Each image gets two tags: the commit SHA and `latest`. The server pins the SHA. Anyone can pull
+the images without a login:
+
+- `ghcr.io/syakeerrahman/regulated-finance-data-platform-api`
+- `ghcr.io/syakeerrahman/regulated-finance-data-platform-airflow`
+
+## Deploying to a server
+
+The server stack is in `deploy/`. It runs Airflow, the live service, Postgres and MLflow, each
+with a memory limit. No port is open to the internet. You reach each service through an SSH
+tunnel.
+
+**Status:** these steps are not yet tested on a real server. The containers, the bootstrap, the
+backup and the restore were rehearsed on fresh volumes on 2026-09-27. The server preparation in
+part 1 is standard Ubuntu setup and was not rehearsed.
+
+### What the server needs
+
+| Item | Value |
+| ---- | ----- |
+| Operating system | Ubuntu 24.04 |
+| Memory | 2.2 GB used by this project, measured. The limits total 4.25 GiB |
+| Disk | 5.6 GB of images, plus about 0.5 GB of data. Budget 8 GB |
+| Open ports | 22 only |
+| Backup bucket | Any S3-compatible bucket: AWS S3 or Cloudflare R2 |
+
+### Part 1: prepare the server
+
+Do these steps once, on a new server.
+
+1. Connect as root: `ssh root@<server ip>`
+2. Make a user: `adduser finplat`
+3. Give the user sudo: `usermod -aG sudo finplat`
+4. On your PC, copy your SSH key: `ssh-copy-id finplat@<server ip>`
+5. Connect as the new user: `ssh finplat@<server ip>`
+6. In `/etc/ssh/sshd_config`, set `PasswordAuthentication no` and `PermitRootLogin no`.
+7. Restart SSH: `sudo systemctl restart ssh`
+8. Before you close this session, open a second SSH session to make sure that the key works.
+9. Allow SSH through the firewall: `sudo ufw allow OpenSSH`
+10. Turn on the firewall: `sudo ufw enable`
+11. Install Docker: `curl -fsSL https://get.docker.com | sudo sh`
+12. Let the user run Docker: `sudo usermod -aG docker finplat`
+13. Disconnect and connect again, so that the new group applies.
+
+### Part 2: start the stack
+
+1. Make the folder:
+
+   ```bash
+   sudo mkdir -p /srv/finplat
+   sudo chown finplat /srv/finplat
+   ```
+
+2. Get the code:
+
+   ```bash
+   git clone https://github.com/SyakeerRahman/regulated-finance-data-platform.git /srv/finplat
+   ```
+
+3. Go to the deploy folder: `cd /srv/finplat/deploy`
+4. Make the settings file: `cp .env.example .env`
+5. Make a Postgres password: `openssl rand -hex 24`
+6. Open `.env` and fill in these values:
+   - `POSTGRES_PASSWORD`: the password from step 5.
+   - `IMAGE_TAG`: the commit SHA of the last green CI run on `main`.
+   - `BACKUP_*`: the bucket settings. `.env.example` shows the values for S3 and for R2.
+7. Make the file private: `chmod 600 .env`
+8. Download the images: `docker compose pull`
+9. Start the stack: `docker compose up -d`
+10. Fill the empty server: `./bootstrap.sh`
+
+The bootstrap takes about 2 minutes. It runs 3 days of the pipeline, trains one model, and
+promotes it. Until it finishes, the `api` container restarts in a loop. That is expected: the
+service cannot start without data and a model.
+
+11. Make sure that the service answers: `curl -s http://127.0.0.1:8097/api/state`
+
+### Part 3: turn on the nightly backup
+
+1. Run one backup by hand: `./backup.sh`
+2. Make sure that the bucket has a new folder under `finplat/`.
+3. Open the cron table: `crontab -e`
+4. Add this line. It runs the backup at 03:15 each night:
+
+   ```text
+   15 3 * * * cd /srv/finplat/deploy && ./backup.sh >> backups/backup.log 2>&1
+   ```
+
+The backup saves Postgres (the alerts and the analyst decisions) and MLflow (the model registry
+and the model files). It does not save the lake, because the lake regenerates from a fixed seed.
+The server keeps 7 days of backups. The bucket keeps the rest.
+
+### Part 4: open the dashboards
+
+The services listen on the server's own address only. From your PC, open an SSH tunnel:
+
+```bash
+ssh -L 8095:127.0.0.1:8095 -L 8096:127.0.0.1:8096 -L 8097:127.0.0.1:8097 finplat@<server ip>
+```
+
+Then open these addresses on your PC:
+
+| Address | Service |
+| ------- | ------- |
+| http://localhost:8097 | The dashboard |
+| http://localhost:8096 | MLflow |
+| http://localhost:8095 | Airflow |
+
+Airflow on the server gives every visitor admin rights. Never expose port 8095 to the internet.
+
+### Deploy a new version
+
+1. Find the commit SHA of the new green CI run on `main`.
+2. Go to the deploy folder: `cd /srv/finplat/deploy`
+3. Get the latest deploy files: `git pull`
+4. In `.env`, set `IMAGE_TAG` to the new SHA.
+5. Download the new images: `docker compose pull`
+6. Restart with the new images: `docker compose up -d`
+7. Remove the old images to free disk space: `docker image prune -f`
+
+To roll back, do the same steps with the previous SHA.
+
+### Restore a backup
+
+The backups are named by the time they were made, for example `2026-09-27T0315Z`.
+
+**After a bad deploy, on a working server:**
+
+1. Go to the deploy folder: `cd /srv/finplat/deploy`
+2. Restore: `./restore.sh <stamp>`
+
+**After a lost server:**
+
+1. Do part 1 and part 2, steps 1 to 9, on the new server. Do not run `bootstrap.sh` yet.
+2. Restore from the bucket: `./restore.sh <stamp>`
+3. Rebuild the lake: `./bootstrap.sh`
+
+The bootstrap sees the restored model and does not train a new one.
+
+A restore replaces the alerts, the decisions and the model registry with the copy in the backup.
+Data written after the backup is lost.
+
+### Not done yet
+
+These steps need a domain and a Cloudflare account:
+
+- **Cloudflare Tunnel and Cloudflare Access.** They give the dashboard a public HTTPS address
+  behind an email login. No port opens on the server.
+- **Deploy on merge.** CI will connect to the server and run the "Deploy a new version" steps.
+- **An alert when the platform stops.**
 
 ## The live path
 
