@@ -4,8 +4,11 @@ import { getQuality } from "../api.js";
 
 export default function Pipeline() {
   const [data, setData] = useState({ batches: [], checks: [], results: [] });
+  const [error, setError] = useState("");
   useEffect(() => {
-    getQuality().then(setData).catch(() => setData({ batches: [], checks: [], results: [] }));
+    getQuality()
+      .then(setData)
+      .catch((reason) => setError(String(reason.message ?? reason)));
   }, []);
 
   const byCell = new Map(data.results.map((row) => [`${row.batch_id}|${row.check}`, row]));
@@ -23,7 +26,9 @@ export default function Pipeline() {
           </span>
         }
       >
-        {data.batches.length === 0 ? (
+        {error ? (
+          <p className="px-4 py-8 text-center text-sm text-critical">Could not load the checks: {error}</p>
+        ) : data.batches.length === 0 ? (
           <p className="px-4 py-8 text-center text-sm text-ink-muted">
             No checks recorded. Run: uv run python -m finplat.run 2026-09-01
           </p>
@@ -82,7 +87,10 @@ export default function Pipeline() {
       </Panel>
 
       <Panel title="What failed" note="Hover any cell above for its detail">
-        {failures.length === 0 ? (
+        {/* "Every check passed" is a claim. Make it only when checks were loaded and ran. */}
+        {error || data.results.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-ink-muted">No results to report.</p>
+        ) : failures.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-ink-muted">Every check passed.</p>
         ) : (
           <ul className="space-y-2 px-4 py-3 text-sm">

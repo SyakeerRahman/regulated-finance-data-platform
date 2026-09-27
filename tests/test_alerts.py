@@ -2,12 +2,17 @@
 
 These need Postgres. They skip when nothing answers on the DSN, so a clone with no containers
 running still gets a green suite.
+
+They run in their own database, `finplat_test`, on the same server. The fixture truncates the
+alerts table, and on the live database that would delete every real alert and every decision.
 """
 
 import pandas as pd
 import psycopg
 import pytest
 from deltalake import DeltaTable
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from finplat.alerts import CONFIRMED, FALSE_POSITIVE, OPEN, Store, export_decisions
 from finplat.explain import Reason, sentence
@@ -30,13 +35,29 @@ def result(transaction_id: str, score: float = 0.97) -> dict:
     }
 
 
-@pytest.fixture
-def store() -> Store:
-    store = Store(get_settings().postgres_dsn)
+TEST_DATABASE = "finplat_test"
+
+
+@pytest.fixture(scope="session")
+def test_dsn() -> str:
+    """The live DSN pointed at a separate database, created on first use."""
+    live = get_settings().postgres_dsn
+    assert conninfo_to_dict(live).get("dbname") != TEST_DATABASE
     try:
-        store.migrate()
+        # CREATE DATABASE cannot run inside a transaction, so this connection autocommits.
+        with psycopg.connect(live, autocommit=True) as connection:
+            exists = connection.execute("select 1 from pg_database where datname = %s", (TEST_DATABASE,)).fetchone()
+            if not exists:
+                connection.execute(sql.SQL("create database {}").format(sql.Identifier(TEST_DATABASE)))
     except psycopg.OperationalError as error:
         pytest.skip(f"no Postgres on the DSN: {error}")
+    return make_conninfo(live, dbname=TEST_DATABASE)
+
+
+@pytest.fixture
+def store(test_dsn) -> Store:
+    store = Store(test_dsn)
+    store.migrate()
     with store.connect() as connection:
         connection.execute("truncate alerts restart identity")
     return store

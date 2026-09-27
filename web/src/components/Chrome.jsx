@@ -3,13 +3,15 @@
 export function Panel({ title, note, right, children, className = "" }) {
   return (
     <section className={`rounded-lg border border-white/10 bg-surface ${className}`}>
+      {/* The header wraps on a phone. The title keeps at least 10rem, so the controls drop to a
+          second line instead of pushing off the edge or squeezing the title to nothing. */}
       {(title || right) && (
-        <header className="flex items-center gap-3 border-b border-white/10 px-4 py-2.5">
-          <div className="min-w-0">
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-white/10 px-4 py-2.5">
+          <div className="min-w-[10rem] flex-1">
             <h2 className="truncate text-sm font-semibold text-ink">{title}</h2>
             {note && <p className="truncate text-xs text-ink-muted">{note}</p>}
           </div>
-          {right && <div className="ml-auto shrink-0">{right}</div>}
+          {right && <div className="ml-auto max-w-full">{right}</div>}
         </header>
       )}
       {children}

@@ -19,6 +19,7 @@ from deltalake import DeltaTable
 from finplat.pipeline import BRONZE, QUARANTINE, SILVER, replace_batch
 
 QUALITY = "quality/checks"
+HISTORY_COLUMNS = ["batch_id", "checked_at", "check", "severity", "passed", "value", "threshold", "detail"]
 
 CRITICAL = "critical"
 WARNING = "warning"
@@ -237,6 +238,10 @@ def _amount_median(lake: str, batch_id: str) -> Check:
 
 def history(lake: str, days: int = 30) -> pd.DataFrame:
     """The last few batches of results, for the grid on the dashboard."""
-    frame = DeltaTable(f"{lake}/{QUALITY}").to_pandas()
+    path = f"{lake}/{QUALITY}"
+    # A lake that has never run a batch has no table yet. That is an empty grid, not an error.
+    if not DeltaTable.is_deltatable(path):
+        return pd.DataFrame(columns=HISTORY_COLUMNS)
+    frame = DeltaTable(path).to_pandas()
     recent = sorted(frame["batch_id"].unique())[-days:]
     return frame[frame["batch_id"].isin(recent)].sort_values(["batch_id", "check"], ignore_index=True)
