@@ -69,10 +69,16 @@ days of history to pass.
 
 ## Docker notes
 
-The compose file mounts `./finplat` at `/opt/project/finplat` and sets `PYTHONPATH=/opt/project`.
-The package is not installed in the image, so a new module in `finplat` works without a rebuild,
-but a new third-party dependency needs it in `requirements-airflow.txt` and a `docker compose build`.
-Airflow's own pins stay in charge, so add only what the pipeline needs on top.
+The Airflow image copies `finplat` and `dags` in, for the server. The local compose file mounts
+`./finplat` and `./dags` over those copies, so a local code edit needs no rebuild. A new
+third-party dependency needs it in `requirements-airflow.txt` and a `docker compose build`.
+
+`requirements-airflow.txt` pins the same versions as `pyproject.toml`, including pandas and
+pyarrow, which replace the base image's own. Under the image's pandas 2 the bronze schema check
+fails every batch. The build runs `pip check`, so a conflicting pin fails the build.
+
+Both images run as uid 50000, group root. They share the lake volume, and a different uid would
+stop one from appending to a table the other created.
 
 ## Project state
 
@@ -80,15 +86,18 @@ Stages A to E are done. Stage F (deploy) is in progress. The VPS is not rented y
 domain, so work that needs neither comes first.
 
 Stage F so far: the repo is public on GitHub, CI runs the tests against a Postgres service, and each
-green push to `main` publishes the API image to GHCR. `Dockerfile.api` builds it (1.4 GB,
-measured at 375 MiB under a 50/sec burst). `deploy/compose.yml` is the server stack: API,
-Postgres and MLflow, each with a memory limit, and nothing on a public port.
+green push to `main` publishes both images to GHCR, tagged with the commit SHA.
+`deploy/compose.yml` is the server stack: Airflow, API, Postgres and MLflow, each with a memory
+limit, and nothing on a public port. `deploy/bootstrap.sh` fills an empty server: 3 days of the
+pipeline, one training run, promote version 1.
 
-Next session, first step: build the Airflow production image with `finplat` and `dags` copied in,
-not mounted, and add it to `deploy/compose.yml`. Then the nightly `pg_dump` and the retention jobs.
+The whole stack was rehearsed on this PC on fresh volumes on 2026-09-27. The bootstrap took
+1 min 40 s. Memory after one live feed and one daily run: Airflow 1.33 GiB, API 447 MiB,
+MLflow 333 MiB, Postgres 44 MiB. Images unpacked: Airflow 2.98 GB, API 1.44 GB, MLflow 0.88 GB,
+Postgres 0.31 GB. That is about 5.6 GB of the 8 GB project disk budget before any data.
 
-A fresh server cannot start the API until the lake has silver and MLflow has a promoted model.
-The bootstrap is: run the pipeline for 3 days, train, promote. Write it as one script.
+Next session, first step: the nightly `pg_dump` and the copy off the server. Then the retention
+jobs from `docs/brief.md` (bronze 7 days, silver and gold 90 days, daily VACUUM).
 
 The local MLflow stores model files at the plain path `/mlflow/artifacts`, which on Windows
 resolved to `C:\mlflow` on the host. `deploy/compose.yml` serves artifacts over HTTP instead.

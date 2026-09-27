@@ -4,13 +4,39 @@
 #
 # The server holds other projects, so every container has a memory limit, and nothing listens on
 # a public port. The dashboard and MLflow bind to 127.0.0.1. The Cloudflare tunnel reaches the
-# dashboard, and MLflow is for an SSH tunnel only.
-#
-# Airflow is not here yet. Its production image needs the pipeline code built in, not mounted.
+# dashboard. MLflow and Airflow are for an SSH tunnel only.
 
 name: finplat
 
 services:
+  airflow:
+    image: ghcr.io/syakeerrahman/regulated-finance-data-platform-airflow:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    # standalone runs the scheduler, the API server, the DAG processor and the triggerer in one
+    # container, on SQLite. Two DAGs, one daily and one weekly, do not need a worker pool.
+    command: standalone
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Every visitor is an admin. Safe only because the port binds to 127.0.0.1 and is reached
+      # over SSH. Never route this port through the Cloudflare tunnel.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/state/airflow.db
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/state/logs
+      LAKE_URI: /lake
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "127.0.0.1:8095:8080"
+    volumes:
+      - lake:/lake
+      - airflow:/opt/airflow/state
+    depends_on:
+      mlflow:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
   api:
     image: ghcr.io/syakeerrahman/regulated-finance-data-platform-api:${IMAGE_TAG:-latest}
     restart: unless-stopped
@@ -79,6 +105,7 @@ services:
           memory: 512m
 
 volumes:
+  airflow:
   lake:
   pgdata:
   mlflow:

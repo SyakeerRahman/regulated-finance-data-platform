@@ -87,8 +87,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The commit SHA is the tag a deploy pins. latest is for a first pull by hand.
-      - uses: docker/build-push-action@v6
+      # The commit SHA is the tag a deploy pins. latest is for a first pull by hand. Both images
+      # carry the same SHA, so one IMAGE_TAG on the server names a matching pair.
+      # Each image has its own cache scope. A shared scope lets one build evict the other.
+      - name: API image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.api
@@ -96,5 +99,17 @@ jobs:
           tags: |
             ghcr.io/syakeerrahman/regulated-finance-data-platform-api:${{ github.sha }}
             ghcr.io/syakeerrahman/regulated-finance-data-platform-api:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Airflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/syakeerrahman/regulated-finance-data-platform-airflow:${{ github.sha }}
+            ghcr.io/syakeerrahman/regulated-finance-data-platform-airflow:latest
+          cache-from: type=gha,scope=airflow
+          cache-to: type=gha,mode=max,scope=airflow

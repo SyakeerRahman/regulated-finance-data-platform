@@ -39,8 +39,9 @@ COPY --from=web /api/static ./api/static
 
 # Not root. A named volume copies the ownership of the folder it mounts over, so /lake is
 # created here and owned by the service user. Without this the first Delta write fails.
-RUN useradd --uid 1000 --no-create-home app \
-    && mkdir /lake && chown app /lake
+# uid 50000 and group root match the Airflow image, which writes to the same lake.
+RUN useradd --uid 50000 --gid 0 --no-create-home app \
+    && mkdir /lake && chown app:root /lake
 USER app
 
 EXPOSE 8000
