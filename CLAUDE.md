@@ -90,10 +90,6 @@ not mounted, and add it to `deploy/compose.yml`. Then the nightly `pg_dump` and 
 A fresh server cannot start the API until the lake has silver and MLflow has a promoted model.
 The bootstrap is: run the pipeline for 3 days, train, promote. Write it as one script.
 
-The local lake predates stage A. `bronze/transactions` still carries `is_fraud`, so the live feed's
-append fails with a schema mismatch and `/api/stop` answers 500. Rebuild `data/lake` before
-testing the live feed locally.
-
 The local MLflow stores model files at the plain path `/mlflow/artifacts`, which on Windows
 resolved to `C:\mlflow` on the host. `deploy/compose.yml` serves artifacts over HTTP instead.
 
@@ -101,9 +97,7 @@ The plan changed on 2026-09-26 from a three-weekend batch demo to a live platfor
 online. Read `docs/brief.md` for the seven stages, the hard disk limits, and the done criteria,
 and `brain/decisions/2026-09-26-the-demo-must-be-alive-not-runnable.md` for why.
 
-Two known defects, both queued for stage A:
-
-- `is_fraud` sits on the transaction row. It moves to a separate `silver/labels` table with a
-  `labelled_at` delay. See `brain/decisions/2026-09-26-the-label-is-not-a-column-on-the-transaction.md`.
-- `silver/transactions` and `silver/quarantine` carry a stray `__index_level_0__` column, written
-  by accident from the pandas index.
+The label lives in `silver/labels` with a `labelled_at` delay, not on the transaction row. See
+`brain/decisions/2026-09-26-the-label-is-not-a-column-on-the-transaction.md`. A lake written
+before stage A still has `is_fraud` in bronze, and the live feed cannot append to it. Rebuild it:
+move `data/lake` aside, then run `finplat.run` for 3 consecutive days.
