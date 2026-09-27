@@ -106,8 +106,17 @@ MinIO (`quay.io/minio/minio`. The Docker Hub image is gone): total loss, then re
 bucket alone, then restore over changed data. All passed. The bucket is not chosen yet: AWS S3
 or Cloudflare R2.
 
-Next session, first step: the retention jobs from `docs/brief.md` (bronze 7 days, silver and gold
-90 days, daily VACUUM, Airflow logs 14 days).
+Retention: `finplat/retention.py`, run by the last two tasks of the daily DAG. Bronze keeps 7 days;
+quarantine, silver, labels and quality keep 90. Gold follows silver. Every table is vacuumed
+at 24 hours, and Airflow logs are deleted after 14 days. The analyst label partition has no
+date and is never expired. Both tasks use `trigger_rule="all_done"`, so a failed quality gate
+does not stop them. Rehearsed in Airflow on 2026-09-27: bronze trimmed, silver kept, and task
+logs and DAG processor logs both land in the state volume. Not yet seen: a run where the
+quality gate fails and retention still runs.
+
+Stage F work left that needs nothing external: none. The rest needs the VPS, a domain and a
+Cloudflare account: Cloudflare Access, deploy on merge, and an alert when the platform stops.
+Choose the backup bucket (S3 or R2) at the same time.
 
 The local MLflow stores model files at the plain path `/mlflow/artifacts`, which on Windows
 resolved to `C:\mlflow` on the host. `deploy/compose.yml` serves artifacts over HTTP instead.

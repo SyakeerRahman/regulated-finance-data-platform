@@ -22,6 +22,9 @@ services:
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/state/airflow.db
       AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/state/logs
+      # The DAG processor writes one file per DAG per day, outside the base folder by default.
+      # Inside it, the daily logs task deletes these after 14 days too.
+      AIRFLOW__LOGGING__DAG_PROCESSOR_CHILD_PROCESS_LOG_DIRECTORY: /opt/airflow/state/logs/dag_processor
       LAKE_URI: /lake
       MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:

@@ -1,10 +1,12 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from airflow.configuration import conf
 from airflow.sdk import dag, get_current_context, task
 
 from finplat.generate import generate
 from finplat.pipeline import build_gold, load_bronze, load_labels, refine_silver
 from finplat.quality import record, run_checks
+from finplat.retention import delete_old_files, drop_expired, vacuum_all
 from finplat.settings import get_settings
 
 
@@ -48,8 +50,23 @@ def transactions_to_delta():
     def gold() -> int:
         return build_gold(get_settings().lake_uri)
 
+    # all_done: the disk fills whether or not today's batch was good. A feed that stays broken
+    # for a week must not also stop retention for a week.
+    # Retries: the live feed appends to bronze while this deletes from it, and a Delta commit
+    # that loses that race fails rather than overwrite. The next attempt sees the new version.
+    @task(trigger_rule="all_done", retries=2, retry_delay=timedelta(minutes=1))
+    def retention() -> dict[str, dict[str, int]]:
+        context = get_current_context()
+        today = (context.get("logical_date") or context["dag_run"].run_after).date()
+        lake = get_settings().lake_uri
+        return {"deleted_rows": drop_expired(lake, today), "vacuumed_files": vacuum_all(lake)}
+
+    @task(trigger_rule="all_done")
+    def logs() -> int:
+        return delete_old_files(conf.get("logging", "base_log_folder"))
+
     batch_id = bronze()
-    silver(batch_id) >> quality(batch_id) >> gold()
+    silver(batch_id) >> quality(batch_id) >> gold() >> retention() >> logs()
 
 
 transactions_to_delta()
