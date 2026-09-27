@@ -19,8 +19,11 @@ services:
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.6.0
+    # MLflow 3 answers 403 to a Host header it does not know, and the default list does not
+    # include the service name that Airflow uses. See deploy/compose.yml for the workers note.
     command: >
-      mlflow server --host 0.0.0.0 --port 5000
+      mlflow server --host 0.0.0.0 --port 5000 --workers 1
+      --allowed-hosts mlflow:5000,localhost:8096,127.0.0.1:8096,host.docker.internal:8096
       --backend-store-uri sqlite:////mlflow/mlflow.db
       --default-artifact-root /mlflow/artifacts
     ports:

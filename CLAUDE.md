@@ -76,7 +76,26 @@ Airflow's own pins stay in charge, so add only what the pipeline needs on top.
 
 ## Project state
 
-The batch pipeline (Airflow + Delta Lake) is built. Everything else is not started.
+Stages A to E are done. Stage F (deploy) is in progress. The VPS is not rented yet and there is no
+domain, so work that needs neither comes first.
+
+Stage F so far: the repo is public on GitHub, CI runs the tests against a Postgres service, and each
+green push to `main` publishes the API image to GHCR. `Dockerfile.api` builds it (1.4 GB,
+measured at 375 MiB under a 50/sec burst). `deploy/compose.yml` is the server stack: API,
+Postgres and MLflow, each with a memory limit, and nothing on a public port.
+
+Next session, first step: build the Airflow production image with `finplat` and `dags` copied in,
+not mounted, and add it to `deploy/compose.yml`. Then the nightly `pg_dump` and the retention jobs.
+
+A fresh server cannot start the API until the lake has silver and MLflow has a promoted model.
+The bootstrap is: run the pipeline for 3 days, train, promote. Write it as one script.
+
+The local lake predates stage A. `bronze/transactions` still carries `is_fraud`, so the live feed's
+append fails with a schema mismatch and `/api/stop` answers 500. Rebuild `data/lake` before
+testing the live feed locally.
+
+The local MLflow stores model files at the plain path `/mlflow/artifacts`, which on Windows
+resolved to `C:\mlflow` on the host. `deploy/compose.yml` serves artifacts over HTTP instead.
 
 The plan changed on 2026-09-26 from a three-weekend batch demo to a live platform that stays
 online. Read `docs/brief.md` for the seven stages, the hard disk limits, and the done criteria,

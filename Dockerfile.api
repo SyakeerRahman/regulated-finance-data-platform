@@ -1,0 +1,49 @@
+# The live service: FastAPI with the React build inside it, so one container answers.
+# The Airflow image stays in ./Dockerfile. The two have different base images and pins.
+
+# Stage 1: build the dashboard. vite writes to ../api/static, which is /api/static here.
+FROM node:24-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# Stage 2: install the dependencies. uv and its download cache stay in this stage. In one stage
+# the cache doubled the image, because it lands in the same layer as the packages.
+FROM python:3.12-slim AS deps
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /usr/local/bin/uv
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project --no-cache \
+    # xgboost pulls NCCL on Linux for training across GPUs. It is 288 MB, and this service
+    # scores on one CPU. xgboost loads it only when a GPU run asks for it.
+    && uv pip uninstall --python /app/.venv/bin/python nvidia-nccl-cu13
+
+# Stage 3: the service.
+FROM python:3.12-slim
+# xgboost needs OpenMP at runtime. The slim image does not ship it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV PATH=/app/.venv/bin:$PATH \
+    PYTHONPATH=/app
+
+COPY --from=deps /app/.venv ./.venv
+COPY finplat ./finplat
+COPY api ./api
+COPY --from=web /api/static ./api/static
+
+# Not root. A named volume copies the ownership of the folder it mounts over, so /lake is
+# created here and owned by the service user. Without this the first Delta write fails.
+RUN useradd --uid 1000 --no-create-home app \
+    && mkdir /lake && chown app /lake
+USER app
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/state', timeout=4)"
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

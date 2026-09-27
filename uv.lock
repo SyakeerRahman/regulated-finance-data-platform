@@ -2459,6 +2459,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "scikit-learn" },
     { name = "shap" },
+    { name = "uvicorn" },
     { name = "xgboost" },
 ]
 
@@ -2480,6 +2481,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = "==2.15.0" },
     { name = "scikit-learn", specifier = "==1.9.1" },
     { name = "shap", specifier = "==0.52.0" },
+    { name = "uvicorn", specifier = "==0.53.0" },
     { name = "xgboost", specifier = "==3.4.1" },
 ]
 

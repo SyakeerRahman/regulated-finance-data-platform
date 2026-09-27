@@ -66,3 +66,35 @@ jobs:
           mkdir -p build && touch build/scorer.zip
           terraform -chdir=terraform init -backend=false
           terraform -chdir=terraform validate
+
+  # The server pulls this image. It is built only after both checks pass on main, so a red
+  # commit never reaches the registry.
+  image:
+    needs: [test, terraform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The commit SHA is the tag a deploy pins. latest is for a first pull by hand.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: |
+            ghcr.io/syakeerrahman/regulated-finance-data-platform-api:${{ github.sha }}
+            ghcr.io/syakeerrahman/regulated-finance-data-platform-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,84 @@
+# The production stack on the shared VPS. Run from this folder:
+#
+#     docker compose --env-file .env up -d
+#
+# The server holds other projects, so every container has a memory limit, and nothing listens on
+# a public port. The dashboard and MLflow bind to 127.0.0.1. The Cloudflare tunnel reaches the
+# dashboard, and MLflow is for an SSH tunnel only.
+#
+# Airflow is not here yet. Its production image needs the pipeline code built in, not mounted.
+
+name: finplat
+
+services:
+  api:
+    image: ghcr.io/syakeerrahman/regulated-finance-data-platform-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      LAKE_URI: /lake
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      POSTGRES_DSN: postgresql://finplat:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/finplat
+    ports:
+      - "127.0.0.1:8097:8000"
+    volumes:
+      - lake:/lake
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          # Measured on 2026-09-27: 350 MiB idle, 375 MiB during a 50/sec burst. Warm-up reads
+          # account_id and amount from all of silver, and at 90 days that is about 7.8 million
+          # rows. Measure again when silver reaches its retention limit.
+          memory: 1536m
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: finplat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: finplat
+    volumes:
+      # Postgres 18 wants the mount one level up. See the note in ../docker-compose.yml.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finplat"]
+      interval: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.6.0
+    restart: unless-stopped
+    # --serve-artifacts makes every client read and write model files over HTTP. The local stack
+    # stores a plain path instead, so on Windows training wrote the models to C:\mlflow on the
+    # host and no container could read them.
+    # --allowed-hosts: MLflow 3 answers 403 to any Host header it does not know. The default
+    # allows localhost and private IPs, not the service name the other containers use.
+    # --workers 1: the default of 4 is most of the idle memory, and two clients need one.
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000 --workers 1
+      --allowed-hosts mlflow:5000,localhost:8096,127.0.0.1:8096
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --serve-artifacts --artifacts-destination /mlflow/artifacts
+    ports:
+      - "127.0.0.1:8096:5000"
+    volumes:
+      - mlflow:/mlflow
+    deploy:
+      resources:
+        limits:
+          # Idle use with 1 worker measured at 312 MiB on 2026-09-27. With 4 it was 735 MiB.
+          memory: 512m
+
+volumes:
+  lake:
+  pgdata:
+  mlflow:
