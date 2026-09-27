@@ -8,6 +8,24 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # There is no .env in CI, and Settings has no default for the lake on purpose.
+    env:
+      LAKE_URI: data/lake
+    # The alert tests skip when nothing answers on the DSN. A service here makes them run.
+    # Same user, password and port as the default DSN in finplat/settings.py.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: finplat
+          POSTGRES_PASSWORD: finplat
+          POSTGRES_DB: finplat
+        ports:
+          - 5440:5432
+        options: >-
+          --health-cmd "pg_isready -U finplat"
+          --health-interval 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v5
 
