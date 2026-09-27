@@ -96,8 +96,18 @@ The whole stack was rehearsed on this PC on fresh volumes on 2026-09-27. The boo
 MLflow 333 MiB, Postgres 44 MiB. Images unpacked: Airflow 2.98 GB, API 1.44 GB, MLflow 0.88 GB,
 Postgres 0.31 GB. That is about 5.6 GB of the 8 GB project disk budget before any data.
 
-Next session, first step: the nightly `pg_dump` and the copy off the server. Then the retention
-jobs from `docs/brief.md` (bronze 7 days, silver and gold 90 days, daily VACUUM).
+Backups: `deploy/backup.sh` runs nightly from cron. It saves Postgres (`pg_dump`, then checked with
+`pg_restore --list`) and MLflow (sqlite backup API plus the model files), and uploads them to any
+S3-compatible bucket with `curl --aws-sigv4`, so no AWS CLI image is needed. The lake is not
+saved, because it regenerates. `deploy/restore.sh <stamp>` reads the local copy, or fetches from
+the bucket if there is none. After a lost server: `restore.sh`, then `bootstrap.sh`, which rebuilds
+the lake and skips training when a model is already live. Rehearsed on 2026-09-27 against a local
+MinIO (`quay.io/minio/minio`. The Docker Hub image is gone): total loss, then restore from the
+bucket alone, then restore over changed data. All passed. The bucket is not chosen yet: AWS S3
+or Cloudflare R2.
+
+Next session, first step: the retention jobs from `docs/brief.md` (bronze 7 days, silver and gold
+90 days, daily VACUUM, Airflow logs 14 days).
 
 The local MLflow stores model files at the plain path `/mlflow/artifacts`, which on Windows
 resolved to `C:\mlflow` on the host. `deploy/compose.yml` serves artifacts over HTTP instead.

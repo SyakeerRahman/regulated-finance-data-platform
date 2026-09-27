@@ -25,3 +25,6 @@ lambda_fn/model.json
 api/static/
 web/node_modules/
 web/dist/
+
+# Backups made by deploy/backup.sh. They go to the bucket, never to git.
+deploy/backups/

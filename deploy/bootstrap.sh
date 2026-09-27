@@ -6,6 +6,10 @@
 #
 # Steps: 3 days of the pipeline, one training run, promote version 1. Rehearsed on fresh volumes
 # on 2026-09-27: 1 minute 40 seconds in total.
+#
+# After a lost server, run restore.sh first and this second. The registry then already has a
+# live model, so this rebuilds the lake and skips training. A new model would replace the one the
+# backup kept.
 set -euo pipefail
 
 # compose reads .env from this folder by default.
@@ -26,11 +30,15 @@ done
 
 # A cutoff in the future makes every generated label visible. Labels arrive with a delay, so a
 # cutoff of today would hide most of them from the first model. The weekly DAG uses its run date.
-echo "== train"
-in_airflow airflow dags test train_fraud_model 2099-01-01
-
-echo "== promote"
-in_airflow python -m finplat.registry promote 1
+live=$(in_airflow python -c "from finplat.registry import live_version; from finplat.settings import get_settings; print(live_version(get_settings().mlflow_tracking_uri) or '')" | tail -1)
+if [ -n "${live}" ]; then
+    echo "== model version ${live} is already live. No training."
+else
+    echo "== train"
+    in_airflow airflow dags test train_fraud_model 2099-01-01
+    echo "== promote"
+    in_airflow python -m finplat.registry promote 1
+fi
 
 echo "== waiting for the api"
 for _ in $(seq 1 30); do
