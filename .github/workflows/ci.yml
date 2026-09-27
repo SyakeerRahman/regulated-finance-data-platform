@@ -60,6 +60,9 @@ jobs:
       # No AWS credentials. validate checks the configuration itself, which is all that can be
       # checked without an account, and it catches a typed resource name before an apply does.
       - name: Validate
+        # validate hashes the Lambda zip, which is build output and not in git. An empty file
+        # stands in for it. Nothing is applied, so the hash is never used.
         run: |
+          mkdir -p build && touch build/scorer.zip
           terraform -chdir=terraform init -backend=false
           terraform -chdir=terraform validate
