@@ -1,22 +1,31 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button, Panel, Pill, Stat, Table } from "../components/Chrome.jsx";
 import { clock, getAccount, money } from "../api.js";
 
-export default function Account() {
-  const [query, setQuery] = useState("");
+export default function Account({ initialId = "" }) {
+  const [query, setQuery] = useState(initialId);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
-  const look = async (event) => {
-    event.preventDefault();
+  const fetchAccount = async (id) => {
     setError("");
     try {
-      setData(await getAccount(query.trim()));
+      setData(await getAccount(id));
     } catch {
       setData(null);
-      setError(`No transactions for ${query.trim()}.`);
+      setError(`No transactions for ${id}.`);
     }
   };
+
+  const look = (event) => {
+    event.preventDefault();
+    fetchAccount(query.trim());
+  };
+
+  // Opened from an alert: look the account up straight away.
+  useEffect(() => {
+    if (initialId) fetchAccount(initialId);
+  }, [initialId]);
 
   return (
     <div className="space-y-4">

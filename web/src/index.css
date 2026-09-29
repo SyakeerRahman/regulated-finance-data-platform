@@ -43,6 +43,7 @@
   --color-series-2: var(--series-2);
   --color-good: var(--good);
   --color-warning: var(--warning);
+  --color-serious: var(--serious);
   --color-critical: var(--critical);
   --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }

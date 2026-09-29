@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # The MLflow server. A file store cannot hold a model registry, so this is always a URL.
     mlflow_tracking_uri: str = Field(default="http://localhost:8096", min_length=1)
 
+    # The Airflow API, for the Pipeline tab. The server stack reaches it by service name.
+    airflow_url: str = Field(default="http://localhost:8095", min_length=1)
+
     # Alerts and analyst decisions. Port 5440 is this project's slot in the workspace port table.
     postgres_dsn: str = Field(default="postgresql://finplat:finplat@localhost:5440/finplat", min_length=1)
 

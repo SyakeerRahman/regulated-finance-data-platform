@@ -2,13 +2,13 @@
 
 export function Panel({ title, note, right, children, className = "" }) {
   return (
-    <section className={`rounded-lg border border-white/10 bg-surface ${className}`}>
+    <section className={`rounded-xl border border-white/10 bg-surface ${className}`}>
       {/* The header wraps on a phone. The title keeps at least 10rem, so the controls drop to a
           second line instead of pushing off the edge or squeezing the title to nothing. */}
       {(title || right) && (
-        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-white/10 px-4 py-2.5">
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-white/10 px-4 py-3">
           <div className="min-w-[10rem] flex-1">
-            <h2 className="truncate text-sm font-semibold text-ink">{title}</h2>
+            <h2 className="truncate text-[15px] font-semibold text-ink">{title}</h2>
             {note && <p className="truncate text-xs text-ink-muted">{note}</p>}
           </div>
           {right && <div className="ml-auto max-w-full">{right}</div>}
@@ -23,7 +23,7 @@ export function Panel({ title, note, right, children, className = "" }) {
 export function Stat({ label, value, sub, tone = "ink" }) {
   const tones = { ink: "text-ink", good: "text-good", critical: "text-critical" };
   return (
-    <div className="rounded-lg border border-white/10 bg-surface px-4 py-3">
+    <div className="rounded-xl border border-white/10 bg-surface px-4 py-3">
       <div className="text-[11px] font-medium uppercase tracking-wide text-ink-muted">{label}</div>
       <div className={`mt-0.5 text-2xl font-semibold ${tones[tone]}`}>{value}</div>
       {sub && <div className="mt-0.5 text-xs text-ink-muted">{sub}</div>}
@@ -36,10 +36,12 @@ export function Pill({ tone, children }) {
   const tones = {
     good: "border-good/40 text-good",
     warning: "border-warning/40 text-warning",
+    serious: "border-serious/40 bg-serious/10 text-serious",
+    info: "border-series-1/40 bg-series-1/10 text-series-1",
     critical: "border-critical/40 text-critical",
     muted: "border-white/15 text-ink-muted",
   };
-  const glyph = { good: "✓", warning: "!", critical: "✕", muted: "·" }[tone];
+  const glyph = { good: "✓", warning: "!", serious: "!", info: "○", critical: "✕", muted: "·" }[tone];
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${tones[tone]}`}
@@ -53,14 +55,14 @@ export function Pill({ tone, children }) {
 export function Table({ columns, rows, empty = "Nothing yet.", rowKey, rowClass }) {
   if (!rows.length) return <p className="px-4 py-8 text-center text-sm text-ink-muted">{empty}</p>;
   return (
-    <div className="overflow-x-auto">
+    <div className="relative overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-white/10">
             {columns.map((column) => (
               <th
                 key={column.key}
-                className={`px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-ink-muted ${
+                className={`sticky top-0 bg-surface px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-ink-muted ${
                   column.right ? "text-right" : "text-left"
                 } ${column.hideSmall ? "hidden md:table-cell" : ""}`}
               >
