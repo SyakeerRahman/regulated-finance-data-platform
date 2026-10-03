@@ -5,13 +5,14 @@ nothing, and gives the same result every time.
 """
 
 import json
+from datetime import date
 
 import pytest
 from deltalake import DeltaTable
 
 from finplat import assistant, policy, prompts
 from finplat.alerts import CONFIRMED, FALSE_POSITIVE, LIKELY_FALSE_POSITIVE, LIKELY_FRAUD, UNSURE, export_decisions
-from finplat.llm import LLM, LLMError
+from finplat.llm import LLM, Budget, BudgetExceeded, LLMError
 from finplat.pipeline import LABELS
 from tests.test_alerts import result, store, test_dsn  # noqa: F401 - pytest finds fixtures by name
 
@@ -359,3 +360,31 @@ def test_search_can_ask_for_alerts_outside_malaysia_and_always_names_a_rule(stor
     # With its title, so the model never has to guess what the id means.
     assert abroad["alerts"][0]["policy_rules"][0].startswith("FP-")
     assert " " in abroad["alerts"][0]["policy_rules"][0]
+
+
+# --- the daily budget ----------------------------------------------------------------------------
+
+
+def test_the_budget_stops_calls_before_any_request_is_sent():
+    """Every visitor can press Ask, and each press spends the owner's credit."""
+    budget = Budget(per_day=2, today=lambda: date(2026, 10, 3))
+    # The base URL answers nothing. A call that got past the budget would fail with a network error.
+    llm = LLM("http://127.0.0.1:9", "m", "key", budget)
+    budget.take()
+    budget.take()
+
+    with pytest.raises(BudgetExceeded, match="limit of 2 AI calls"):
+        llm.chat([{"role": "user", "content": "x"}])
+    assert budget.snapshot() == {"used": 2, "per_day": 2}
+
+
+def test_the_budget_starts_again_each_utc_day():
+    clock = {"day": date(2026, 10, 3)}
+    budget = Budget(per_day=1, today=lambda: clock["day"])
+    budget.take()
+    with pytest.raises(BudgetExceeded):
+        budget.take()
+
+    clock["day"] = date(2026, 10, 4)
+    assert budget.snapshot() == {"used": 0, "per_day": 1}
+    budget.take()

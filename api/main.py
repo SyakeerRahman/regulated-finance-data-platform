@@ -27,7 +27,7 @@ from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
 from finplat.feed import Pool
 from finplat.live_stats import LiveStats
-from finplat.llm import LLM, LLMError
+from finplat.llm import LLM, Budget, BudgetExceeded, LLMError
 from finplat.pipeline import GOLD, LIVE_PREFIX, SILVER, append_bronze
 from finplat.quality import history as quality_history
 from finplat.registry import REGISTERED_MODEL, live_version, load_production, production_threshold, promote
@@ -63,7 +63,9 @@ class Engine:
         self.explainer = Explainer(self.model, FEATURE_COLUMNS)
         self.store = Store(settings.postgres_dsn)
         self.store.migrate()
-        self.llm = LLM(settings.llm_base_url, settings.llm_model, settings.llm_api_key)
+        self.llm = LLM(
+            settings.llm_base_url, settings.llm_model, settings.llm_api_key, Budget(settings.llm_daily_calls)
+        )
         self.model_version = live_version(settings.mlflow_tracking_uri)
         self.threshold = production_threshold(settings.mlflow_tracking_uri)
         self.history = AccountHistory()
@@ -380,6 +382,11 @@ def _alert_or_404(alert_id: int) -> dict:
     return _with_rules(alert)
 
 
+def _llm_failure(error: LLMError) -> HTTPException:
+    # 429 says "come back later", which is true of a spent budget and not of a broken provider.
+    return HTTPException(429 if isinstance(error, BudgetExceeded) else 502, str(error))
+
+
 def _require_llm() -> None:
     if not engine.llm.enabled:
         raise HTTPException(503, "The AI is off. Set LLM_API_KEY or DEEPSEEK_API_KEY in .env and restart the service.")
@@ -398,6 +405,7 @@ def ai_status() -> dict:
     return {
         "enabled": engine.llm.enabled,
         "model": engine.llm.model,
+        "budget": engine.llm.budget.snapshot(),
         "base_url": engine.llm.base_url,
         "prompts": prompts.versions(),
         "agreement": engine.store.agreement(),
@@ -424,7 +432,7 @@ def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
     try:
         narrative = assistant.narrate(engine.llm, alert, engine.store.for_account(alert["account_id"]))
     except LLMError as error:
-        raise HTTPException(502, str(error)) from error
+        raise _llm_failure(error) from error
     saved = engine.store.save_narrative(alert_id, narrative, engine.llm.model, prompts.load("narrate").version)
     return _with_rules({**alert, **saved})
 
@@ -439,7 +447,7 @@ def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
     try:
         note = assistant.case_note(engine.llm, _toolbox(), alert_id)
     except LLMError as error:
-        raise HTTPException(502, str(error)) from error
+        raise _llm_failure(error) from error
     saved = engine.store.save_case_note(alert_id, note["answer"], note["model"], note["prompt_version"])
     return {"alert": _with_rules({**alert, **saved}), "tools": note["tools"]}
 
@@ -463,7 +471,7 @@ def ask(body: Question) -> dict:
     try:
         return assistant.ask(engine.llm, _toolbox(), [message.model_dump() for message in body.messages])
     except LLMError as error:
-        raise HTTPException(502, str(error)) from error
+        raise _llm_failure(error) from error
 
 
 _cache: dict[str, tuple[float, object]] = {}

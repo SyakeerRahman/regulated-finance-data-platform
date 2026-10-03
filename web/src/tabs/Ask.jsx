@@ -72,6 +72,7 @@ export default function Ask() {
       const history = next.filter((message) => !message.error).slice(-KEEP).map(({ role, content }) => ({ role, content }));
       const answer = await ask(history);
       setMessages((previous) => [...previous, { role: "assistant", content: answer.answer || "(no answer)", tools: answer.tools }]);
+      getAi().then(setStatus).catch(() => {});
     } catch (failure) {
       setMessages((previous) => [...previous, { role: "assistant", content: `No answer: ${failure.message}`, error: true }]);
     } finally {
@@ -166,6 +167,10 @@ export default function Ask() {
             <dd className="tabular truncate text-ink">{status?.model ?? "…"}</dd>
             <dt className="text-ink-muted">Provider</dt>
             <dd className="tabular truncate text-ink">{status ? new URL(status.base_url).hostname : "…"}</dd>
+            <dt className="text-ink-muted">Calls today</dt>
+            <dd className="tabular text-ink">
+              {status?.budget ? `${status.budget.used} of ${status.budget.per_day}` : "�"}
+            </dd>
             <dt className="text-ink-muted">Agreement</dt>
             <dd className="text-ink">
               {agreement?.rate != null

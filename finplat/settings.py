@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     llm_api_key: str | None = Field(default=None, validation_alias=AliasChoices("LLM_API_KEY", "DEEPSEEK_API_KEY"))
     llm_base_url: str = Field(default="https://api.deepseek.com", min_length=1)
     llm_model: str = Field(default="deepseek-chat", min_length=1)
+    # Model calls for each UTC day. One question can cost up to 6 calls, so 500 is about 100 questions.
+    llm_daily_calls: int = Field(default=500, gt=0)
 
 
 def get_settings() -> Settings:

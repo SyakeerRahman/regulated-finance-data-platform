@@ -458,7 +458,17 @@ LLM_API_KEY=sk-...
 ```
 
 `DEEPSEEK_API_KEY` is also accepted. To use another provider, also set `LLM_BASE_URL` and
-`LLM_MODEL`. The provider must accept the OpenAI chat format with tool calls.
+`LLM_MODEL`. The provider must accept the OpenAI chat format with tool calls. For example, an
+OpenRouter key needs these two lines:
+
+```text
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=deepseek/deepseek-chat
+```
+
+The dashboard has no login until Cloudflare Access is in front of it, and each AI call spends
+the owner's credit. `LLM_DAILY_CALLS` caps the model calls for each UTC day. The default is 500.
+After that, the AI endpoints answer 429 until 00:00 UTC. One question can use up to 6 calls.
 
 DeepSeek processes requests on servers in China. The data here is synthetic. A real card issuer
 must not send card data to a provider outside its approved jurisdictions.
