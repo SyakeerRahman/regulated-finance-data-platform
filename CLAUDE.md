@@ -117,8 +117,14 @@ quarantine, silver, labels and quality keep 90. Gold follows silver. Every table
 at 24 hours, and Airflow logs are deleted after 14 days. The analyst label partition has no
 date and is never expired. Both tasks use `trigger_rule="all_done"`, so a failed quality gate
 does not stop them. Rehearsed in Airflow on 2026-09-27: bronze trimmed, silver kept, and task
-logs and DAG processor logs both land in the state volume. Not yet seen: a run where the
-quality gate fails and retention still runs.
+logs and DAG processor logs both land in the state volume. Seen on 2026-10-03: the quality gate
+fails, gold is skipped, retention and logs still run, and the `verdict` task marks the run
+failed. Without `verdict` the run showed success, because a run takes the state of its last tasks.
+To rehearse it again: `docker compose exec -e ROWS_PER_BATCH=5000 airflow airflow dags test
+transactions_to_delta 2026-09-26`, then the same command without `-e` to restore the batch.
+
+The local Airflow keeps its database inside the container. A rebuild resets it, and every DAG
+comes back paused.
 
 Stage F work left that needs nothing external: none. The rest needs the VPS, a domain and a
 Cloudflare account: Cloudflare Access, deploy on merge, and an alert when the platform stops.
