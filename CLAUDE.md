@@ -17,7 +17,8 @@ The workspace rules are in `C:\Users\User\Project\CLAUDE.md`.
 | Lint | `uv run ruff check .` |
 | Format | `uv run ruff format .` |
 | One day of the pipeline, no Airflow | `uv run python -m finplat.run 2026-09-01` |
-| Airflow | `docker compose up -d --build`, then http://localhost:8095 |
+| The whole local stack: Airflow, API, MLflow, Postgres | `docker compose up -d --build`, then http://localhost:8097 (dashboard) and http://localhost:8095 (Airflow) |
+| Grade the AI analyst against the true answers | `docker compose exec api python -m finplat.ai_eval --alerts 100 --seed 23` |
 | Rebuild the Airflow image after a dependency change | `docker compose build` |
 
 `.env` with `LAKE_URI=data/lake` must exist before any command that touches the lake. The settings
@@ -27,6 +28,9 @@ class has no default for it, so a missing value stops startup.
 
 `finplat` holds all the logic. Everything else calls it.
 
+- `feed.py` gives the live feed its payments. Round 0 of a day is that day's batch. Each later
+  round draws new rows with ids such as `20261003-r2-0000123`, so the alert store never sees a
+  replay. `generate(..., round_=0)` gives exactly the rows it gave before rounds existed.
 - `generate.py` makes one day of synthetic transactions and injects broken rows on purpose
   (`DUPLICATE_RATE`, `MISSING_ACCOUNT_RATE`, `BAD_AMOUNT_RATE`). Those constants are what gives the
   silver layer work to do, and the tests assert that quarantine and duplicate counts are above zero.
@@ -77,6 +81,11 @@ third-party dependency needs it in `requirements-airflow.txt` and a `docker comp
 pyarrow, which replace the base image's own. Under the image's pandas 2 the bronze schema check
 fails every batch. The build runs `pip check`, so a conflicting pin fails the build.
 
+`data/mlflow/artifacts` must be writable by uid 50000. When the root `mlflow` container creates
+it first, it is 755 and the API and Airflow cannot log to it. Fix once:
+`MSYS_NO_PATHCONV=1 docker compose exec mlflow chmod -R a+rwX /mlflow/artifacts`. Without
+`MSYS_NO_PATHCONV=1`, Git Bash rewrites `/mlflow` into a Windows path.
+
 Both images run as uid 50000, group root. They share the lake volume, and a different uid would
 stop one from appending to a table the other created.
 
@@ -84,6 +93,14 @@ stop one from appending to a table the other created.
 
 Stages A to E are done. Stage F (deploy) is in progress. The VPS is not rented yet and there is no
 domain, so work that needs neither comes first.
+
+Stage G (AI layer) is built on branch `stage-g-ai`, ahead of the VPS: policy citation, AI analyst
+on each alert, case-note agent, Ask AI tab, agreement metric. `finplat/assistant.py` holds it.
+Tests use a fake model, so the suite never calls a real one. The AI suggestion is graded
+against the true answers by `finplat/ai_eval.py`: change the narrate prompt, then grade it on a
+`--seed` it was not tuned on. Model calls are capped by `LLM_DAILY_CALLS`. Read
+`brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md` before changing who picks the
+rule or what the tools may do.
 
 Stage F so far: the repo is public on GitHub, CI runs the tests against a Postgres service, and each
 green push to `main` publishes both images to GHCR, tagged with the commit SHA.
@@ -111,8 +128,14 @@ quarantine, silver, labels and quality keep 90. Gold follows silver. Every table
 at 24 hours, and Airflow logs are deleted after 14 days. The analyst label partition has no
 date and is never expired. Both tasks use `trigger_rule="all_done"`, so a failed quality gate
 does not stop them. Rehearsed in Airflow on 2026-09-27: bronze trimmed, silver kept, and task
-logs and DAG processor logs both land in the state volume. Not yet seen: a run where the
-quality gate fails and retention still runs.
+logs and DAG processor logs both land in the state volume. Seen on 2026-10-03: the quality gate
+fails, gold is skipped, retention and logs still run, and the `verdict` task marks the run
+failed. Without `verdict` the run showed success, because a run takes the state of its last tasks.
+To rehearse it again: `docker compose exec -e ROWS_PER_BATCH=5000 airflow airflow dags test
+transactions_to_delta 2026-09-26`, then the same command without `-e` to restore the batch.
+
+The local Airflow keeps its database inside the container. A rebuild resets it, and every DAG
+comes back paused.
 
 Stage F work left that needs nothing external: none. The rest needs the VPS, a domain and a
 Cloudflare account: Cloudflare Access, deploy on merge, and an alert when the platform stops.

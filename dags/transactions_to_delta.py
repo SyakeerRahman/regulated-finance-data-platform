@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from airflow.configuration import conf
 from airflow.sdk import dag, get_current_context, task
+from airflow.sdk.exceptions import AirflowFailException
 
 from finplat.generate import generate
 from finplat.pipeline import build_gold, load_bronze, load_labels, refine_silver
@@ -65,8 +66,17 @@ def transactions_to_delta():
     def logs() -> int:
         return delete_old_files(conf.get("logging", "base_log_folder"))
 
+    # A run takes the state of its last tasks. retention and logs run on all_done, so they pass
+    # after a failed quality gate, and on 2026-10-03 a run with gold never built showed success.
+    # This task runs only when a task before it failed, and it fails the run with that task.
+    @task(trigger_rule="one_failed")
+    def verdict() -> None:
+        raise AirflowFailException("a task in this run failed. The red task above says which")
+
     batch_id = bronze()
-    silver(batch_id) >> quality(batch_id) >> gold() >> retention() >> logs()
+    cleaned, checked, built, kept, cleared = silver(batch_id), quality(batch_id), gold(), retention(), logs()
+    cleaned >> checked >> built >> kept >> cleared
+    [batch_id, cleaned, checked, built, kept, cleared] >> verdict()
 
 
 transactions_to_delta()

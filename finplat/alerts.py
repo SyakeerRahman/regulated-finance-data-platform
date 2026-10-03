@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 import psycopg
 from psycopg.rows import dict_row
 
+from finplat.domain import HOME_COUNTRY, RISKY_CATEGORIES
+
 OPEN = "open"
 CONFIRMED = "confirmed_fraud"
 FALSE_POSITIVE = "false_positive"
@@ -45,7 +47,29 @@ create table if not exists alerts (
 );
 create index if not exists alerts_status_idx on alerts (status, created_at desc);
 create index if not exists alerts_account_idx on alerts (account_id);
+
+-- Stage G. Added, not created, so a store that already holds alerts keeps them.
+alter table alerts add column if not exists features jsonb;
+alter table alerts add column if not exists policy_rules text[];
+alter table alerts add column if not exists ai_summary text;
+alter table alerts add column if not exists ai_suggestion text;
+alter table alerts add column if not exists ai_confidence text;
+alter table alerts add column if not exists ai_check text;
+alter table alerts add column if not exists ai_model text;
+alter table alerts add column if not exists ai_prompt_version text;
+alter table alerts add column if not exists ai_at timestamptz;
+alter table alerts add column if not exists case_note text;
+alter table alerts add column if not exists case_note_model text;
+alter table alerts add column if not exists case_note_prompt_version text;
+alter table alerts add column if not exists case_note_at timestamptz;
 """
+
+# What the language model may suggest. It is advice, so it lives beside the decision and never in it.
+LIKELY_FRAUD = "likely_fraud"
+LIKELY_FALSE_POSITIVE = "likely_false_positive"
+UNSURE = "unsure"
+SUGGESTIONS = (LIKELY_FRAUD, LIKELY_FALSE_POSITIVE, UNSURE)
+CONFIDENCES = ("high", "medium", "low")
 
 
 @dataclass
@@ -65,10 +89,11 @@ class Store:
             row = connection.execute(
                 """
                 insert into alerts (transaction_id, account_id, amount, country, channel, category,
-                                    occurred_at, score, threshold, model_version, reason, contributions)
+                                    occurred_at, score, threshold, model_version, reason, contributions,
+                                    features, policy_rules)
                 values (%(transaction_id)s, %(account_id)s, %(amount)s, %(country)s, %(channel)s,
                         %(category)s, %(occurred_at)s, %(score)s, %(threshold)s, %(model_version)s,
-                        %(reason)s, %(contributions)s)
+                        %(reason)s, %(contributions)s, %(features)s, %(policy_rules)s)
                 on conflict (transaction_id) do nothing
                 returning alert_id
                 """,
@@ -85,9 +110,113 @@ class Store:
                     "model_version": result["model_version"],
                     "reason": reason,
                     "contributions": json.dumps(contributions),
+                    "features": json.dumps(result["features"]) if result.get("features") else None,
+                    "policy_rules": result.get("policy_rules"),
                 },
             ).fetchone()
             return row["alert_id"] if row else None
+
+    def get(self, alert_id: int) -> dict | None:
+        with self.connect() as connection:
+            return connection.execute(
+                f"select *, {TOP_REASON} as top_reason from alerts where alert_id = %s", (alert_id,)
+            ).fetchone()
+
+    def for_account(self, account_id: str, limit: int = 20) -> list[dict]:
+        with self.connect() as connection:
+            return connection.execute(
+                "select * from alerts where account_id = %s order by created_at desc limit %s", (account_id, limit)
+            ).fetchall()
+
+    def similar(self, alert_id: int, limit: int = 5) -> list[dict]:
+        """The alerts whose payments look most like this one, nearest first.
+
+        Distance is measured on what every alert row holds, old or new: the amount on a log
+        scale, the score, abroad, online, a resellable category, night, and the top SHAP reason.
+        Exact, in SQL, over every alert. At tens of thousands of rows that takes milliseconds,
+        and pgvector would need a new Postgres image. See the decision record of 2026-10-03.
+        """
+        risky = ", ".join(f"'{category}'" for category in sorted(RISKY_CATEGORIES))
+
+        def differs(fact: str) -> str:
+            return f"case when ({fact.format(t='a')}) is distinct from ({fact.format(t='t')}) then 1 else 0 end"
+
+        distance = " + ".join(
+            [
+                "power(ln(greatest(a.amount, 0.01)) - ln(greatest(t.amount, 0.01)), 2)",
+                # -log10(1 - score) spreads the top of the scale, where 0.99 and 0.999 differ most.
+                "0.5 * power(-log(greatest(1 - a.score, 1e-6)) + log(greatest(1 - t.score, 1e-6)), 2)",
+                differs(f"{{t}}.country <> '{HOME_COUNTRY}'"),
+                differs("{t}.channel = 'online'"),
+                differs(f"{{t}}.category in ({risky})"),
+                differs("extract(hour from {t}.occurred_at at time zone 'UTC') < 6"),
+                differs(TOP_REASON.replace("contributions", "{t}.contributions")),
+            ]
+        )
+        with self.connect() as connection:
+            return connection.execute(
+                f"""
+                select a.alert_id, a.account_id, a.amount, a.country, a.category, a.channel, a.score,
+                       a.status, a.created_at, round(({distance})::numeric, 3) as distance
+                from alerts a, (select * from alerts where alert_id = %(id)s) t
+                where a.alert_id <> t.alert_id
+                order by {distance}, a.created_at desc
+                limit %(limit)s
+                """,
+                {"id": alert_id, "limit": limit},
+            ).fetchall()
+
+    def save_narrative(self, alert_id: int, narrative: dict, model: str, prompt_version: str) -> dict | None:
+        if narrative["suggestion"] not in SUGGESTIONS or narrative["confidence"] not in CONFIDENCES:
+            raise ValueError(f"suggestion must be one of {SUGGESTIONS} and confidence one of {CONFIDENCES}")
+        with self.connect() as connection:
+            return connection.execute(
+                """
+                update alerts set ai_summary = %(summary)s, ai_suggestion = %(suggestion)s,
+                                  ai_confidence = %(confidence)s, ai_check = %(check)s, ai_model = %(model)s,
+                                  ai_prompt_version = %(version)s, ai_at = now()
+                where alert_id = %(alert_id)s returning *
+                """,
+                {**narrative, "model": model, "version": prompt_version, "alert_id": alert_id},
+            ).fetchone()
+
+    def save_case_note(self, alert_id: int, note: str, model: str, prompt_version: str) -> dict | None:
+        with self.connect() as connection:
+            return connection.execute(
+                """
+                update alerts set case_note = %s, case_note_model = %s, case_note_prompt_version = %s,
+                                  case_note_at = now()
+                where alert_id = %s returning *
+                """,
+                (note, model, prompt_version, alert_id),
+            ).fetchone()
+
+    def agreement(self) -> dict:
+        """How often the model's suggestion matched what the analyst then decided.
+
+        Unsure suggestions are counted apart. Scored as misses, they would make the honest answer
+        look like the worst one.
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                select ai_suggestion as suggestion, status, count(*) as n from alerts
+                where ai_suggestion is not null and status <> %s
+                group by 1, 2
+                """,
+                (OPEN,),
+            ).fetchall()
+        expected = {LIKELY_FRAUD: CONFIRMED, LIKELY_FALSE_POSITIVE: FALSE_POSITIVE}
+        firm = [row for row in rows if row["suggestion"] in expected]
+        agreed = sum(row["n"] for row in firm if expected[row["suggestion"]] == row["status"])
+        decided = sum(row["n"] for row in firm)
+        return {
+            "decided": decided,
+            "agreed": agreed,
+            "rate": agreed / decided if decided else None,
+            "unsure": sum(row["n"] for row in rows if row["suggestion"] == UNSURE),
+            "matrix": [[row["suggestion"], row["status"], row["n"]] for row in rows],
+        }
 
     def recent(self, limit: int = 50, status: str | None = None) -> list[dict]:
         clause = "where status = %(status)s" if status else ""

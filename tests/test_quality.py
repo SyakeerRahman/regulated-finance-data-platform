@@ -5,7 +5,7 @@ import pytest
 from deltalake import DeltaTable
 
 from finplat.generate import generate
-from finplat.pipeline import BRONZE, build_gold, load_bronze, load_labels, refine_silver
+from finplat.pipeline import BRONZE, LIVE_PREFIX, append_bronze, build_gold, load_bronze, load_labels, refine_silver
 from finplat.quality import (
     CRITICAL,
     QUALITY,
@@ -62,6 +62,20 @@ def test_a_short_batch_stops_the_run(lake):
     assert volume.detail.startswith("404 rows against")
     with pytest.raises(DataQualityError, match="volume"):
         report.raise_on_critical()
+
+
+def test_the_live_feed_does_not_count_towards_the_daily_volume(lake):
+    """Seen on 2026-10-03: a long live-feed day set the average, and a normal day failed."""
+    live, _ = generate(DAYS[-1], 40_000, seed=11, accounts=ACCOUNTS)
+    append_bronze(lake, live, LIVE_PREFIX + DAYS[-1].isoformat())
+    batch_id = load(lake, date(2026, 9, 4))
+
+    volume = named(run_checks(lake, batch_id, as_of=NOW), "volume")
+
+    assert volume.passed, volume.detail
+    # The three daily batches only. With the live partition counted, the average passes 15,000.
+    assert "3-batch average" in volume.detail
+    assert volume.threshold < 5_000
 
 
 def test_a_stale_batch_stops_the_run(lake):

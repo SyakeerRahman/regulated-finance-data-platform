@@ -1,6 +1,12 @@
 const json = async (path, options) => {
   const response = await fetch(path, options);
-  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  if (!response.ok) {
+    // FastAPI puts the reason in `detail`. The AI panel shows it, so "no key" reads as no key.
+    const detail = await response.json().then((body) => body?.detail, () => null);
+    const error = new Error(typeof detail === "string" ? detail : `${path} answered ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 };
 
@@ -114,3 +120,60 @@ export const getLakeRows = (filters) => {
   return json(`/api/lake/rows?${params}`);
 };
 export const getTrace = (id) => json(`/api/lake/trace/${encodeURIComponent(id)}`);
+
+// Stage G: the AI layer.
+export const getAi = () => json("/api/ai");
+export const getAiEvaluation = () => json("/api/ai/evaluation");
+export const getSimilar = (id) => json(`/api/alerts/${id}/similar?limit=5`);
+let policyRequest = null;
+/** The policy does not change while the page is open, so it is fetched once. */
+export const getPolicy = () => {
+  policyRequest ??= json("/api/policy").catch((error) => {
+    policyRequest = null;
+    throw error;
+  });
+  return policyRequest;
+};
+export const narrate = (id, refresh = false) =>
+  json(`/api/alerts/${id}/narrative${refresh ? "?refresh=true" : ""}`, { method: "POST" });
+export const writeCaseNote = (id, refresh = false) =>
+  json(`/api/alerts/${id}/case-note${refresh ? "?refresh=true" : ""}`, { method: "POST" });
+/**
+ * The answer as it is made. `onEvent` gets each server-sent event: tool, delta, discard, done or
+ * error. A POST, because the question is a body and EventSource can only send a GET.
+ */
+export const askStream = async (messages, onEvent) => {
+  const response = await fetch("/api/ask/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  if (!response.ok) {
+    const detail = await response.json().then((body) => body?.detail, () => null);
+    throw new Error(typeof detail === "string" ? detail : `the question answered ${response.status}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // An event ends at a blank line. The last piece may be half an event, so it waits for more.
+    const events = buffer.split("\n\n");
+    buffer = events.pop();
+    for (const event of events) {
+      const data = event.split("\n").find((line) => line.startsWith("data:"));
+      if (data) onEvent(JSON.parse(data.slice(5)));
+    }
+  }
+};
+
+export const ask = (messages) =>
+  json("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages }) });
+
+export const SUGGESTION = {
+  likely_fraud: { label: "Likely fraud", tone: "critical" },
+  likely_false_positive: { label: "Likely false positive", tone: "info" },
+  unsure: { label: "Unsure", tone: "muted" },
+};

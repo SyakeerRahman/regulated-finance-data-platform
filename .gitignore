@@ -16,6 +16,8 @@ build/
 data/downloads/
 # Delta tables written by the pipeline
 data/lake/
+# Model files of the local MLflow. The API and Airflow containers mount them as /mlflow.
+data/mlflow/artifacts/
 
 # Lambda build output. Exported from the model registry, not written by hand.
 build/

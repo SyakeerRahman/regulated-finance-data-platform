@@ -54,16 +54,23 @@ CHARGEBACK_DAYS = (30, 91)
 DISPUTE_WINDOW_DAYS = 90
 
 
-def generate(day: date, rows: int, seed: int, accounts: int = ACCOUNTS) -> tuple[pd.DataFrame, pd.DataFrame]:
+def generate(
+    day: date, rows: int, seed: int, accounts: int = ACCOUNTS, round_: int = 0
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """One day of transactions as a card processor would land them, dirty rows included.
 
     Returns the transactions and their labels as two frames. The truth never rides on the
     transaction, because a bank does not know it for weeks and a column that is present is a
     column a feature can read by accident.
+
+    `round_` gives the live feed more of the same day once a pool runs out. Round 0 is the daily
+    batch itself. A later round draws new rows with ids of their own, so the alert store does not
+    discard them as replays.
     """
     # Spend levels depend on the seed only, so an account behaves the same way on every day.
     account_level = np.random.default_rng(seed).lognormal(mean=3.5, sigma=0.6, size=accounts)
-    rng = np.random.default_rng([seed, day.toordinal()])
+    rng = np.random.default_rng([seed, day.toordinal()] + ([round_] if round_ else []))
+    prefix = f"{day:%Y%m%d}" + (f"-r{round_}" if round_ else "")
 
     is_fraud = rng.random(rows) < FRAUD_RATE
     account = rng.integers(0, accounts, rows)
@@ -88,7 +95,7 @@ def generate(day: date, rows: int, seed: int, accounts: int = ACCOUNTS) -> tuple
 
     frame = pd.DataFrame(
         {
-            "transaction_id": [f"{day:%Y%m%d}-{i:07d}" for i in range(rows)],
+            "transaction_id": [f"{prefix}-{i:07d}" for i in range(rows)],
             "account_id": [f"ACC{a:05d}" for a in account],
             "merchant_category": category,
             "amount": np.round(amount, 2),

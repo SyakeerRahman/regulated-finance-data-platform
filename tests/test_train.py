@@ -4,7 +4,16 @@ import pandas as pd
 import pytest
 
 from finplat.pipeline import training_frame
-from finplat.train import NOT_FEATURES, features_of, fit, split_by_time
+from finplat.train import (
+    MIN_FRAUD,
+    MIN_HONEST,
+    NOT_FEATURES,
+    NotEnoughLabels,
+    check_labels,
+    features_of,
+    fit,
+    split_by_time,
+)
 from tests.test_pipeline import run_day
 
 CUTOFF = pd.Timestamp("2027-01-01", tz="UTC")
@@ -54,3 +63,26 @@ def test_the_logged_curves_are_the_test_set_the_metrics_came_from(judged):
     assert result.curves["rows"] == len(test)
     assert result.curves["pr_auc"] == pytest.approx(result.metrics["pr_auc"])
     assert result.curves["positives"] == int(test["is_fraud"].sum())
+
+
+def test_a_cutoff_with_no_verdicts_yet_says_so(judged):
+    """Seen live: the weekly run met an empty table and crashed with an IndexError in the metrics."""
+    with pytest.raises(NotEnoughLabels, match="0 fraud and 0 honest"):
+        check_labels(judged.iloc[0:0])
+
+
+def test_too_few_fraud_cases_is_not_enough(judged):
+    honest = judged[~judged["is_fraud"]]
+    few = pd.concat([honest, judged[judged["is_fraud"]].head(MIN_FRAUD - 1)])
+    with pytest.raises(NotEnoughLabels, match=f"{MIN_FRAUD - 1} fraud and"):
+        check_labels(few)
+
+
+def test_fraud_alone_is_not_enough():
+    """For weeks after a fresh start only chargebacks are known. A model of fraud alone learns nothing."""
+    with pytest.raises(NotEnoughLabels, match=f"Training needs {MIN_FRAUD} and {MIN_HONEST:,}"):
+        check_labels(pd.DataFrame({"is_fraud": [True] * 5_000}))
+
+
+def test_four_days_of_verdicts_are_enough(judged):
+    check_labels(judged)

@@ -9,25 +9,28 @@ React app in front. The shape stays: one loop in, one score, one stream out.
 import asyncio
 import contextlib
 import json
+import threading
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from queue import SimpleQueue
 
 import pandas as pd
 from deltalake import DeltaTable
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from finplat import lake_browser, model_report, ops
+from finplat import ai_eval, assistant, lake_browser, model_report, ops, policy, prompts
 from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
-from finplat.generate import generate
+from finplat.feed import Pool
 from finplat.live_stats import LiveStats
-from finplat.pipeline import GOLD, SILVER, append_bronze
+from finplat.llm import LLM, Budget, BudgetExceeded, LLMError
+from finplat.pipeline import GOLD, LIVE_PREFIX, SILVER, append_bronze
 from finplat.quality import history as quality_history
 from finplat.registry import REGISTERED_MODEL, live_version, load_production, production_threshold, promote
 from finplat.settings import get_settings
@@ -41,11 +44,13 @@ DEFAULT_RATE = 1.0
 # every transaction would leave 86,400 files a day and a table nothing can open.
 FLUSH_ROWS = 2_000
 FLUSH_SECONDS = 60
-# Its own partition. The daily DAG owns the partition named after the date, and two writers on
-# one partition is how a replace deletes the other writer's rows.
-LIVE_BATCH_PREFIX = "live-"
 
 STATIC = Path(__file__).parent / "static"
+
+
+def _python(values: dict) -> dict:
+    """numpy booleans and integers do not survive json.dumps, and this row goes to the stream."""
+    return {key: value.item() if hasattr(value, "item") else value for key, value in values.items()}
 
 
 class Engine:
@@ -60,6 +65,9 @@ class Engine:
         self.explainer = Explainer(self.model, FEATURE_COLUMNS)
         self.store = Store(settings.postgres_dsn)
         self.store.migrate()
+        self.llm = LLM(
+            settings.llm_base_url, settings.llm_model, settings.llm_api_key, Budget(settings.llm_daily_calls)
+        )
         self.model_version = live_version(settings.mlflow_tracking_uri)
         self.threshold = production_threshold(settings.mlflow_tracking_uri)
         self.history = AccountHistory()
@@ -75,10 +83,9 @@ class Engine:
         self._flushed_at = time.monotonic()
         self.written = 0
         self._task: asyncio.Task | None = None
-        # One day of transactions, replayed in a loop. The generator is the same one the batch
-        # pipeline uses, so the live data and the training data come from one place.
-        self._pool = self._fill_pool(settings)
-        self._next = 0
+        # The generator is the same one the batch pipeline uses, so the live data and the training
+        # data come from one place.
+        self.pool = Pool(settings.seed, settings.accounts)
         self.stats.note(
             "service",
             f"Started. Model v{self.model_version} loaded, {self.warmed:,} accounts warmed from silver",
@@ -89,14 +96,6 @@ class Engine:
         """Load the account history the batch pipeline already built. Redis holds this in stage E."""
         silver = DeltaTable(f"{lake}/{SILVER}").to_pandas(columns=["account_id", "amount"])
         return self.history.warm(silver)
-
-    @staticmethod
-    def _fill_pool(settings) -> list[dict]:
-        transactions, _ = generate(datetime.now(UTC).date(), 20_000, settings.seed, settings.accounts)
-        clean = transactions[transactions["account_id"].notna() & (transactions["amount"] > 0)]
-        # Shuffled, because the feed stamps its own clock on each row. In time order the pool
-        # opens on the small hours, where fraud concentrates, and the first minute is all alerts.
-        return clean.sample(frac=1, random_state=settings.seed).to_dict("records")
 
     @property
     def running(self) -> bool:
@@ -136,7 +135,9 @@ class Engine:
 
         rows, self._buffer = self._buffer, []
         self._flushed_at = time.monotonic()
-        batch_id = LIVE_BATCH_PREFIX + pd.Timestamp.now(tz="UTC").date().isoformat()
+        # Its own partition. The daily DAG owns the partition named after the date, and two writers
+        # on one partition is how a replace deletes the other writer's rows.
+        batch_id = LIVE_PREFIX + pd.Timestamp.now(tz="UTC").date().isoformat()
         # A Delta write takes seconds. On the event loop it would stall the feed and every
         # browser watching it.
         started = time.perf_counter()
@@ -156,9 +157,8 @@ class Engine:
         )
 
     def _take(self) -> dict:
-        transaction = dict(self._pool[self._next % len(self._pool)])
-        self._next += 1
-        # The pool is one fixed day. Stamp the real clock on it so the feed reads as live.
+        transaction = self.pool.take()
+        # The pool holds whole days. Stamp the real clock on each row so the feed reads as live.
         transaction["ts"] = pd.Timestamp.now(tz="UTC")
         return transaction
 
@@ -176,6 +176,11 @@ class Engine:
         alert = score >= self.threshold
         # SHAP walks every tree, so it runs for an alert and not for the 99% that pass.
         reasons = self.explainer.reasons(features) if alert else []
+        contributions = {reason.feature: round(reason.contribution, 4) for reason in reasons}
+        # The rule is cited here, by code, when the alert is raised. The language model only ever
+        # explains a rule that is already chosen.
+        facts = {**features, "country": transaction["country"]}
+        rules = [rule.rule_id for rule in policy.cite(facts, contributions)] if alert else []
 
         return {
             "transaction_id": transaction["transaction_id"],
@@ -192,7 +197,9 @@ class Engine:
             "threshold": round(self.threshold, 4),
             "model_version": self.model_version,
             "reason": sentence(reasons),
-            "contributions": {reason.feature: round(reason.contribution, 4) for reason in reasons},
+            "contributions": contributions,
+            "policy_rules": rules,
+            "features": _python(features) if alert else None,
         }
 
     async def reload_model(self) -> None:
@@ -317,7 +324,7 @@ def alerts(
         limit=max(1, min(limit, 200)),
         offset=max(0, offset),
     )
-    return {"alerts": rows, "total": total, "counts": engine.store.counts()}
+    return {"alerts": [_with_rules(row) for row in rows], "total": total, "counts": engine.store.counts()}
 
 
 @app.get("/api/alerts/summary")
@@ -356,6 +363,170 @@ def decide(alert_id: int, status: str) -> dict:
 @app.post("/api/labels/export")
 def export_labels() -> dict:
     return {"written": export_decisions(engine.store, engine.lake)}
+
+
+# --- stage G: the AI layer -----------------------------------------------------------------------
+# Sync endpoints on purpose. A model call takes seconds, and FastAPI runs a sync endpoint in a
+# worker thread, so the feed on the event loop never waits for one.
+
+
+def _with_rules(alert: dict) -> dict:
+    """An alert raised before stage G has no stored rule. Cite one now, from the fields it has."""
+    if not alert.get("policy_rules"):
+        alert["policy_rules"] = [rule.rule_id for rule in assistant.rules_for(alert)]
+    return alert
+
+
+def _alert_or_404(alert_id: int) -> dict:
+    alert = engine.store.get(alert_id)
+    if alert is None:
+        raise HTTPException(404, f"no alert {alert_id}")
+    return _with_rules(alert)
+
+
+def _llm_failure(error: LLMError) -> HTTPException:
+    # 429 says "come back later", which is true of a spent budget and not of a broken provider.
+    return HTTPException(429 if isinstance(error, BudgetExceeded) else 502, str(error))
+
+
+def _require_llm() -> None:
+    if not engine.llm.enabled:
+        raise HTTPException(503, "The AI is off. Set LLM_API_KEY or DEEPSEEK_API_KEY in .env and restart the service.")
+
+
+def _toolbox() -> assistant.Toolbox:
+    def model_info() -> dict:
+        versions = cached("versions", 30, lambda: model_report.version_rows(engine.tracking_uri))
+        return {"live_version": engine.model_version, "threshold": engine.threshold, "versions": versions}
+
+    return assistant.Toolbox(engine.store, engine.lake, model_info)
+
+
+@app.get("/api/ai")
+def ai_status() -> dict:
+    return {
+        "enabled": engine.llm.enabled,
+        "model": engine.llm.model,
+        "budget": engine.llm.budget.snapshot(),
+        "base_url": engine.llm.base_url,
+        "prompts": prompts.versions(),
+        "agreement": engine.store.agreement(),
+    }
+
+
+@app.get("/api/ai/evaluation")
+def ai_evaluation() -> dict:
+    """The newest score of the AI analyst against the true answers. `python -m finplat.ai_eval` writes it."""
+    try:
+        return {"evaluation": cached("ai-evaluation", 300, lambda: ai_eval.latest(engine.tracking_uri))}
+    except Exception as error:  # noqa: BLE001 - MLflow down is a missing panel, not a broken tab
+        return {"evaluation": None, "error": str(error)}
+
+
+@app.get("/api/policy")
+def policy_rules() -> dict:
+    return {"name": policy.POLICY_NAME, "rules": [rule.public() for rule in policy.RULES]}
+
+
+@app.get("/api/alerts/{alert_id}")
+def get_alert(alert_id: int) -> dict:
+    return _alert_or_404(alert_id)
+
+
+@app.get("/api/alerts/{alert_id}/similar")
+def similar_alerts(alert_id: int, limit: int = 5) -> dict:
+    _alert_or_404(alert_id)
+    return {"similar": engine.store.similar(alert_id, max(1, min(limit, 20)))}
+
+
+@app.post("/api/alerts/{alert_id}/narrative")
+def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
+    """Two sentences and a suggestion from the language model. Kept, so a second look costs nothing."""
+    alert = _alert_or_404(alert_id)
+    if alert["ai_summary"] and not refresh:
+        return alert
+    _require_llm()
+    try:
+        narrative = assistant.narrate(engine.llm, alert, engine.store.for_account(alert["account_id"]))
+    except LLMError as error:
+        raise _llm_failure(error) from error
+    saved = engine.store.save_narrative(alert_id, narrative, engine.llm.model, prompts.load("narrate").version)
+    return _with_rules({**alert, **saved})
+
+
+@app.post("/api/alerts/{alert_id}/case-note")
+def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
+    """The investigation agent reads the alert, the account and the policy, then writes a case note."""
+    alert = _alert_or_404(alert_id)
+    if alert["case_note"] and not refresh:
+        return {"alert": alert, "tools": []}
+    _require_llm()
+    try:
+        note = assistant.case_note(engine.llm, _toolbox(), alert_id)
+    except LLMError as error:
+        raise _llm_failure(error) from error
+    saved = engine.store.save_case_note(alert_id, note["answer"], note["model"], note["prompt_version"])
+    return {"alert": _with_rules({**alert, **saved}), "tools": note["tools"]}
+
+
+class Message(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=2_000)
+
+
+class Question(BaseModel):
+    # The browser keeps the conversation and sends it whole. A cap keeps one tab from sending a
+    # conversation long enough to cost real money on every question.
+    messages: list[Message] = Field(min_length=1, max_length=20)
+
+
+def _question(body: Question) -> list[dict]:
+    if body.messages[-1].role != "user":
+        raise HTTPException(400, "the last message must be the question")
+    _require_llm()
+    return [message.model_dump() for message in body.messages]
+
+
+@app.post("/api/ask")
+def ask(body: Question) -> dict:
+    messages = _question(body)
+    try:
+        return assistant.ask(engine.llm, _toolbox(), messages)
+    except LLMError as error:
+        raise _llm_failure(error) from error
+
+
+@app.post("/api/ask/stream")
+def ask_stream(body: Question) -> StreamingResponse:
+    """The same answer as /api/ask, sent as it is made.
+
+    A question took 10 to 19 seconds with nothing on screen. Now the page shows each tool as the
+    agent calls it, then the answer as it is written. Server-sent events over a POST, because the
+    question is a body, and EventSource can only send a GET.
+    """
+    messages = _question(body)
+    events: SimpleQueue = SimpleQueue()
+
+    def work() -> None:
+        try:
+            answer = assistant.ask(engine.llm, _toolbox(), messages, events.put)
+            events.put({"type": "done", **answer})
+        except LLMError as error:
+            events.put({"type": "error", "status": _llm_failure(error).status_code, "detail": str(error)})
+        except Exception as error:  # noqa: BLE001 - the reader must hear that the answer stopped
+            events.put({"type": "error", "status": 500, "detail": f"the answer stopped: {error}"})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def send():
+        while (event := events.get()) is not None:
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    # no-transform and X-Accel-Buffering stop a proxy from holding the stream until it ends.
+    headers = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
+    return StreamingResponse(send(), media_type="text/event-stream", headers=headers)
 
 
 _cache: dict[str, tuple[float, object]] = {}
