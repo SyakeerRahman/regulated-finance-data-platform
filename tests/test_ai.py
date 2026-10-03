@@ -23,9 +23,11 @@ class FakeLLM(LLM):
         super().__init__("http://fake", "fake-model", "key")
         self.replies = list(replies)
         self.requests: list[list[dict]] = []
+        self.options: list[dict] = []
 
     def chat(self, messages, **options) -> dict:
         self.requests.append([dict(message) for message in messages])
+        self.options.append(options)
         return self.replies.pop(0)
 
 
@@ -227,6 +229,62 @@ def test_no_tool_can_write():
     assert all(hasattr(assistant.Toolbox, f"tool_{name}") for name in names)
 
 
+def test_a_repeated_tool_call_is_not_run_twice():
+    """Seen live: one case note asked for the same account history 21 times."""
+    calls = []
+
+    class Counting(Box):
+        def tool_get_alert(self, alert_id) -> dict:
+            calls.append(alert_id)
+            return super().tool_get_alert(alert_id)
+
+    llm = FakeLLM(
+        [
+            tool_call("get_alert", {"alert_id": 8}),
+            tool_call("get_alert", {"alert_id": 8}, call_id="c2"),
+            {"content": "Done."},
+        ]
+    )
+
+    answer = assistant.run_agent(llm, Counting(), "system", [{"role": "user", "content": "x"}])
+
+    assert calls == [8]
+    assert len(answer["tools"]) == 1
+    assert "already have this result" in llm.requests[2][-1]["content"]
+
+
+def test_an_empty_reply_is_retried_once_then_an_error():
+    llm = FakeLLM([{"content": None}, {"content": "Second try."}])
+    assert assistant.run_agent(llm, Box(), "system", [{"role": "user", "content": "x"}])["answer"] == "Second try."
+
+    llm = FakeLLM([{"content": None}, {"content": "  "}])
+    with pytest.raises(LLMError, match="nothing, twice"):
+        assistant.run_agent(llm, Box(), "system", [{"role": "user", "content": "x"}])
+
+
+def test_text_written_beside_a_tool_call_is_not_kept():
+    """Written before any tool ran, it is a guess. Live, it invented a model version."""
+    guess = {**tool_call("get_alert", {"alert_id": 8}), "content": "The model is v3.2 with 89% agreement."}
+    llm = FakeLLM([guess, {"content": "Alert #8 is MYR 153.14."}])
+
+    assistant.run_agent(llm, Box(), "system", [{"role": "user", "content": "x"}])
+
+    assert "v3.2" not in json.dumps(llm.requests[1])
+
+
+def test_the_last_round_must_answer_without_tools():
+    llm = FakeLLM(
+        [tool_call("get_alert", {"alert_id": n}, call_id=f"c{n}") for n in range(assistant.MAX_TOOL_ROUNDS - 1)]
+        + [{"content": "Answer from what I have."}]
+    )
+
+    answer = assistant.run_agent(llm, Box(), "system", [{"role": "user", "content": "x"}])
+
+    assert answer["answer"] == "Answer from what I have."
+    assert llm.options[-1]["tool_choice"] == "none"
+    assert all(options["tool_choice"] is None for options in llm.options[:-1])
+
+
 def test_an_agent_that_never_stops_calling_tools_is_stopped():
     llm = FakeLLM([tool_call("get_alert", {"alert_id": 8}, call_id=f"c{n}") for n in range(assistant.MAX_TOOL_ROUNDS)])
     with pytest.raises(LLMError, match="no answer after"):
@@ -283,3 +341,21 @@ def test_agreement_counts_firm_suggestions_and_keeps_unsure_apart(store):  # noq
     assert agreement["agreed"] == 2
     assert agreement["rate"] == pytest.approx(2 / 3)
     assert agreement["unsure"] == 1
+
+
+def test_search_can_ask_for_alerts_outside_malaysia_and_always_names_a_rule(store):  # noqa: F811
+    """Two answers seen live: Malaysian alerts listed as "outside Malaysia", and "no rule specified"."""
+    store.raise_alert({**result("home"), "country": "MY"}, "r", {})
+    store.raise_alert({**result("away"), "country": "SG"}, "r", {})
+    tools = assistant.Toolbox(store, "", dict)
+
+    abroad = tools.run("search_alerts", {"abroad": True})
+    at_home = tools.run("search_alerts", {"abroad": False})
+
+    assert [row["country"] for row in abroad["alerts"]] == ["SG"]
+    assert [row["country"] for row in at_home["alerts"]] == ["MY"]
+    # Raised with no stored rule, like every alert from before stage G. Search still cites one.
+    assert all(row["policy_rules"] for row in abroad["alerts"] + at_home["alerts"])
+    # With its title, so the model never has to guess what the id means.
+    assert abroad["alerts"][0]["policy_rules"][0].startswith("FP-")
+    assert " " in abroad["alerts"][0]["policy_rules"][0]

@@ -17,12 +17,16 @@ from decimal import Decimal
 
 from finplat import policy, prompts
 from finplat.alerts import CONFIDENCES, SUGGESTIONS, TOP_REASON, Store
+from finplat.domain import HOME_COUNTRY
 from finplat.llm import LLM, LLMError
 
 # A tool answer longer than this is cut. A model reading 200 rows answers no better than one
 # reading 20, and pays for every one.
 TOOL_RESULT_CHARS = 6_000
 MAX_TOOL_ROUNDS = 6
+# Measured on 2026-10-03: one case note called the same tool with the same arguments 21 times
+# and took 37 s. A repeat gets a short note instead of a second run, and the total is capped.
+MAX_TOOL_CALLS = 12
 SUMMARY_CHARS = 600
 
 ALERT_FIELDS = (
@@ -154,6 +158,10 @@ TOOLS = [
         {
             "status": {"type": "string", "enum": ["open", "confirmed_fraud", "false_positive"]},
             "country": {"type": "string", "description": "Two-letter merchant country, for example SG"},
+            "abroad": {
+                "type": "boolean",
+                "description": "true: only merchants outside Malaysia. false: only merchants in Malaysia",
+            },
             "reason": {
                 "type": "string",
                 "description": "The feature that raised the score most",
@@ -227,7 +235,15 @@ class Toolbox:
             return {"error": f"{name} failed: {error}"}
 
     def tool_search_alerts(
-        self, status=None, country=None, reason=None, account_id=None, min_amount=None, hours=None, limit=10
+        self,
+        status=None,
+        country=None,
+        abroad=None,
+        reason=None,
+        account_id=None,
+        min_amount=None,
+        hours=None,
+        limit=10,
     ) -> dict:
         clauses, params = [], {"limit": max(1, min(int(limit or 10), 20))}
         if status:
@@ -236,6 +252,11 @@ class Toolbox:
         if country:
             clauses.append("country = %(country)s")
             params["country"] = country.upper()
+        # Seen live: asked for alerts outside Malaysia, with no way to say "not MY", the model
+        # dropped the filter and listed Malaysian alerts as the answer.
+        if abroad is not None:
+            clauses.append("country <> %(home)s" if abroad else "country = %(home)s")
+            params["home"] = HOME_COUNTRY
         if reason:
             clauses.append(f"{TOP_REASON} = %(reason)s")
             params["reason"] = reason
@@ -254,11 +275,18 @@ class Toolbox:
             rows = connection.execute(
                 f"""
                 select alert_id, account_id, amount, country, category, channel, score, status, created_at,
-                       policy_rules, {TOP_REASON} as top_reason
+                       policy_rules, features, contributions, {TOP_REASON} as top_reason
                 from alerts {where} order by created_at desc limit %(limit)s
                 """,
                 params,
             ).fetchall()
+        for row in rows:
+            # Seen live: an alert from before stage G has no stored rule, and the model told the
+            # analyst the rule was "not specified". Cite it here, as the dashboard does.
+            # The title rides with the id. Given only "FP-12", the model described the rule from
+            # its imagination instead of reading it.
+            row["policy_rules"] = [f"{rule.rule_id} {rule.title}" for rule in rules_for(row)]
+            del row["features"], row["contributions"]
         return {"total_matching": total, "alerts": _plain(rows)}
 
     def tool_get_alert(self, alert_id) -> dict:
@@ -361,30 +389,48 @@ class Toolbox:
 
 
 def run_agent(llm: LLM, toolbox: Toolbox, system: str, messages: list[dict]) -> dict:
-    """Let the model call tools until it answers, or until MAX_TOOL_ROUNDS have passed."""
+    """Let the model call tools until it answers. The last round must answer, with no tools."""
     conversation = [{"role": "system", "content": system}, *messages]
     used = []
-    for _ in range(MAX_TOOL_ROUNDS):
-        reply = llm.chat(conversation, tools=TOOLS, max_tokens=900)
+    seen: set[str] = set()
+    empty = 0
+    for round_number in range(MAX_TOOL_ROUNDS):
+        last = round_number == MAX_TOOL_ROUNDS - 1
+        reply = llm.chat(conversation, tools=TOOLS, tool_choice="none" if last else None, max_tokens=900)
         calls = reply.get("tool_calls") or []
         if not calls:
-            return {"answer": (reply.get("content") or "").strip(), "tools": used}
+            answer = (reply.get("content") or "").strip()
+            if answer:
+                return {"answer": answer, "tools": used}
+            # Seen live through OpenRouter: 2 of 3 replies to one question had no text and no
+            # tool call. One retry, then a clear error. An empty answer must never look like one.
+            empty += 1
+            if empty > 1:
+                raise LLMError(f"{llm.model} answered with nothing, twice")
+            continue
 
         # The assistant turn that asked for the tools goes back in first. Without it, the tool
         # results answer a question the provider has no record of, and it refuses the request.
-        conversation.append({"role": "assistant", "content": reply.get("content") or "", "tool_calls": calls})
+        # Its text is dropped: written before any tool ran, it is a guess, and it was seen
+        # inventing a model version and an agreement rate.
+        conversation.append({"role": "assistant", "content": "", "tool_calls": calls})
         for call in calls:
             name = call["function"]["name"]
             try:
                 arguments = json.loads(call["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 arguments = None
-            result = (
-                toolbox.run(name, arguments)
-                if isinstance(arguments, dict)
-                else {"error": "the arguments were not a JSON object"}
-            )
-            used.append({"tool": name, "arguments": arguments})
+            key = f"{name}:{json.dumps(arguments, sort_keys=True)}"
+            if not isinstance(arguments, dict):
+                result = {"error": "the arguments were not a JSON object"}
+            elif key in seen:
+                result = {"note": "You already have this result, above. Use it and write the answer."}
+            elif len(used) >= MAX_TOOL_CALLS:
+                result = {"error": f"The limit of {MAX_TOOL_CALLS} tool calls is reached. Answer with what you have."}
+            else:
+                seen.add(key)
+                result = toolbox.run(name, arguments)
+                used.append({"tool": name, "arguments": arguments})
             conversation.append(
                 {
                     "role": "tool",

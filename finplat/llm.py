@@ -32,6 +32,7 @@ class LLM:
         messages: list[dict],
         *,
         tools: list[dict] | None = None,
+        tool_choice: str | None = None,
         json_output: bool = False,
         max_tokens: int = 800,
         temperature: float = 0.2,
@@ -43,6 +44,8 @@ class LLM:
         body = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
         if tools:
             body["tools"] = tools
+        if tools and tool_choice:
+            body["tool_choice"] = tool_choice
         if json_output:
             body["response_format"] = {"type": "json_object"}
 
