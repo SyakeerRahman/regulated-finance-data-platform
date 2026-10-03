@@ -7,5 +7,5 @@ export default defineConfig({
   // The build lands where FastAPI serves static files, so one server answers in production.
   build: { outDir: "../api/static", emptyOutDir: true },
   // In development Vite serves the app and forwards the API to uvicorn.
-  server: { proxy: { "/api": "http://localhost:8097" } },
+  server: { proxy: { "/api": "http://127.0.0.1:8097" } },
 });
