@@ -2,6 +2,8 @@ services:
   airflow:
     build: .
     command: standalone
+    # Docker Desktop starts these again after a reboot, once it is running itself.
+    restart: unless-stopped
     ports:
       - "8095:8080"
     environment:
@@ -13,12 +15,44 @@ services:
       # Inside the network the server is a service name. localhost is the container itself.
       MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
+      # Airflow's own SQLite database lives here. Inside the container, a rebuild deleted it on
+      # 2026-10-03: every run was forgotten and every DAG came back paused.
+      - airflow-state:/opt/airflow
       - ./dags:/opt/airflow/dags
       - ./finplat:/opt/project/finplat
       - ./data/lake:/opt/lake
+      # The model files. A training run here writes where the API reads.
+      - ./data/mlflow:/mlflow
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    ports:
+      - "8097:8000"
+    # The LLM key and its settings. The values below replace the ones in .env that only make
+    # sense outside a container.
+    env_file: .env
+    environment:
+      LAKE_URI: /opt/lake
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      AIRFLOW_URL: http://airflow:8080
+      POSTGRES_DSN: postgresql://finplat:finplat@postgres:5432/finplat
+    volumes:
+      - ./data/lake:/opt/lake
+      # The model registry stores plain paths such as /mlflow/artifacts/1/... and the API loads
+      # the files from there. This is the same folder the mlflow service mounts.
+      - ./data/mlflow:/mlflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.6.0
+    restart: unless-stopped
     # MLflow 3 answers 403 to a Host header it does not know, and the default list does not
     # include the service name that Airflow uses. See deploy/compose.yml for the workers note.
     command: >
@@ -35,6 +69,7 @@ services:
     image: postgres:18-alpine
     # Named, so `docker ps` on a machine running several projects says which one holds 5440.
     container_name: finplat-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: finplat
       POSTGRES_PASSWORD: finplat
@@ -52,3 +87,4 @@ services:
 
 volumes:
   finplat-pgdata:
+  airflow-state:
