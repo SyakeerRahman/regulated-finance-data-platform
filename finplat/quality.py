@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 from deltalake import DeltaTable
 
-from finplat.pipeline import BRONZE, QUARANTINE, SILVER, replace_batch
+from finplat.pipeline import BRONZE, LIVE_PREFIX, QUARANTINE, SILVER, replace_batch
 
 QUALITY = "quality/checks"
 HISTORY_COLUMNS = ["batch_id", "checked_at", "check", "severity", "passed", "value", "threshold", "detail"]
@@ -167,7 +167,10 @@ def _freshness(batch: pd.DataFrame, now: pd.Timestamp) -> Check:
 
 def _volume(bronze: DeltaTable, batch_id: str, rows: int) -> Check:
     history = bronze.to_pandas(columns=["batch_id"])["batch_id"].value_counts()
-    earlier = history.drop(index=batch_id, errors="ignore").sort_index().tail(HISTORY_DAYS)
+    # Daily batches only. Seen on 2026-10-03: four live-feed partitions of 3,473 to 712,017 rows
+    # set the average at 172,468, and a normal 20,200-row day failed as a broken feed.
+    daily = history[~history.index.str.startswith(LIVE_PREFIX)]
+    earlier = daily.drop(index=batch_id, errors="ignore").sort_index().tail(HISTORY_DAYS)
     if earlier.empty:
         return Check("volume", CRITICAL, True, rows, 0, "no earlier batch to compare against")
 

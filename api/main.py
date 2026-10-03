@@ -28,7 +28,7 @@ from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
 from finplat.generate import generate
 from finplat.live_stats import LiveStats
 from finplat.llm import LLM, LLMError
-from finplat.pipeline import GOLD, SILVER, append_bronze
+from finplat.pipeline import GOLD, LIVE_PREFIX, SILVER, append_bronze
 from finplat.quality import history as quality_history
 from finplat.registry import REGISTERED_MODEL, live_version, load_production, production_threshold, promote
 from finplat.settings import get_settings
@@ -42,9 +42,6 @@ DEFAULT_RATE = 1.0
 # every transaction would leave 86,400 files a day and a table nothing can open.
 FLUSH_ROWS = 2_000
 FLUSH_SECONDS = 60
-# Its own partition. The daily DAG owns the partition named after the date, and two writers on
-# one partition is how a replace deletes the other writer's rows.
-LIVE_BATCH_PREFIX = "live-"
 
 STATIC = Path(__file__).parent / "static"
 
@@ -143,7 +140,9 @@ class Engine:
 
         rows, self._buffer = self._buffer, []
         self._flushed_at = time.monotonic()
-        batch_id = LIVE_BATCH_PREFIX + pd.Timestamp.now(tz="UTC").date().isoformat()
+        # Its own partition. The daily DAG owns the partition named after the date, and two writers
+        # on one partition is how a replace deletes the other writer's rows.
+        batch_id = LIVE_PREFIX + pd.Timestamp.now(tz="UTC").date().isoformat()
         # A Delta write takes seconds. On the event loop it would stall the feed and every
         # browser watching it.
         started = time.perf_counter()

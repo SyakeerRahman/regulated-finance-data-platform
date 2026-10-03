@@ -18,7 +18,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from finplat.pipeline import BRONZE, GOLD, LABELS, QUARANTINE, SILVER
+from finplat.pipeline import BRONZE, GOLD, LABELS, LIVE_PREFIX, QUARANTINE, SILVER
 from finplat.quality import QUALITY
 
 # Days each table keeps, counted back from the run date. The brief: bronze 7, silver and gold 90.
@@ -32,8 +32,6 @@ RETENTION_DAYS = {
 }
 VACUUM_HOURS = 24
 LOG_DAYS = 14
-
-LIVE_PREFIX = "live-"
 
 
 def batch_day(batch_id: str) -> date | None:
