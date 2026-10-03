@@ -15,6 +15,7 @@ server stack runs on Docker Compose. The data is synthetic. The brief is in
 | Storage | Delta Lake (delta-rs) |
 | Model registry | MLflow |
 | Live service | FastAPI and React, with Postgres for the alerts |
+| AI layer | Any OpenAI-format chat API, DeepSeek by default |
 | Serving, one transaction | AWS Lambda |
 | Infrastructure | Terraform for the Lambda, Docker Compose on one VPS |
 | CI/CD | GitHub Actions, with images in GitHub Container Registry |
@@ -375,14 +376,16 @@ rate.
 
 ## The dashboard
 
-Five tabs, at http://localhost:8097.
+Seven tabs, at http://localhost:8097.
 
 | Tab | Shows |
 | --- | ----- |
 | Live | Start and rate controls, a counter, a volume chart, and the rows as they arrive |
-| Alerts | One card for each alert, its reason, and the two decision buttons |
+| Alerts | One card for each alert: its reason, its policy rule, the AI analyst, and the two decision buttons |
 | Model | The live MLflow version, every registered version, and why accuracy is not reported |
 | Pipeline | The data quality grid, one column for each batch |
+| Data | The lake, layer by layer, down to single rows |
+| Ask AI | A chat that answers questions from the live data, the policy, and the AI agreement rate |
 | Account | One account's history, its features, and the alerts raised against it |
 
 Three rules the charts follow:
@@ -418,6 +421,47 @@ An analyst then confirms the alert or calls it a false positive. That decision i
 of fact as a chargeback, so it goes into `silver/labels` with `label_source = analyst` and the
 next retrain reads it. Measured end to end: two decisions, and a retrain run today sees exactly
 those two rows, because every other label is still inside its dispute window.
+
+## The AI layer
+
+Stage G adds a language model. It explains, investigates and answers questions. It never decides.
+The reasons are in `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md`.
+
+| Part | What it does | Where |
+| ---- | ------------ | ----- |
+| Policy citation | Code picks the rule of `FP-2026` that the alert breaks, when the alert is raised | `finplat/policy.py` |
+| AI analyst | Two sentences, a suggestion (likely fraud, likely false positive or unsure) and one check | `finplat/assistant.py`, `narrate` |
+| Case note | An agent reads the alert, the account and the policy with tools, then writes a note | `finplat/assistant.py`, `case_note` |
+| Ask AI | A chat with eight read-only tools over Postgres, the lake and MLflow | `finplat/assistant.py`, `ask` |
+| Agreement | How often the suggestion matched the analyst decision | `Store.agreement` |
+
+Five rules hold the layer in place:
+
+1. **Code cites the rule.** A regulator asks which rule an alert broke. The answer must be the same
+   on every replay, so the model receives the rule and cannot change it.
+2. **The tools only read.** A test fails if a tool name starts with a write verb.
+3. **A suggestion is never a label.** It is stored in `ai_suggestion`, beside the analyst status.
+   `export_decisions` reads only the status. A test checks this with a suggestion and a decision
+   that disagree.
+4. **The model is optional.** With no key, or when a call fails, each alert keeps its SHAP reason
+   and its policy rule. The dashboard says that the AI is off.
+5. **Each answer keeps its prompt version.** The version is a hash of the prompt file in
+   `finplat/prompts/`, so an edit changes it and nobody has to remember to.
+
+The model writes the narrative only when an analyst opens the alert, and the answer is stored.
+At 1 payment each second, about 860 alerts arrive each day, and most are never opened.
+
+To turn the layer on, add the key to `.env`:
+
+```text
+LLM_API_KEY=sk-...
+```
+
+`DEEPSEEK_API_KEY` is also accepted. To use another provider, also set `LLM_BASE_URL` and
+`LLM_MODEL`. The provider must accept the OpenAI chat format with tool calls.
+
+DeepSeek processes requests on servers in China. The data here is synthetic. A real card issuer
+must not send card data to a provider outside its approved jurisdictions.
 
 ## The live feed writes to the lake in batches
 

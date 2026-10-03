@@ -85,6 +85,12 @@ stop one from appending to a table the other created.
 Stages A to E are done. Stage F (deploy) is in progress. The VPS is not rented yet and there is no
 domain, so work that needs neither comes first.
 
+Stage G (AI layer) is built on branch `stage-g-ai`, ahead of the VPS: policy citation, AI analyst
+on each alert, case-note agent, Ask AI tab, agreement metric. `finplat/assistant.py` holds it.
+Tests use a fake model, so the suite never calls a real one. Read
+`brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md` before changing who picks the
+rule or what the tools may do.
+
 Stage F so far: the repo is public on GitHub, CI runs the tests against a Postgres service, and each
 green push to `main` publishes both images to GHCR, tagged with the commit SHA.
 `deploy/compose.yml` is the server stack: Airflow, API, Postgres and MLflow, each with a memory

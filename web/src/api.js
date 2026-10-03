@@ -1,6 +1,12 @@
 const json = async (path, options) => {
   const response = await fetch(path, options);
-  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  if (!response.ok) {
+    // FastAPI puts the reason in `detail`. The AI panel shows it, so "no key" reads as no key.
+    const detail = await response.json().then((body) => body?.detail, () => null);
+    const error = new Error(typeof detail === "string" ? detail : `${path} answered ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 };
 
@@ -114,3 +120,27 @@ export const getLakeRows = (filters) => {
   return json(`/api/lake/rows?${params}`);
 };
 export const getTrace = (id) => json(`/api/lake/trace/${encodeURIComponent(id)}`);
+
+// Stage G: the AI layer.
+export const getAi = () => json("/api/ai");
+let policyRequest = null;
+/** The policy does not change while the page is open, so it is fetched once. */
+export const getPolicy = () => {
+  policyRequest ??= json("/api/policy").catch((error) => {
+    policyRequest = null;
+    throw error;
+  });
+  return policyRequest;
+};
+export const narrate = (id, refresh = false) =>
+  json(`/api/alerts/${id}/narrative${refresh ? "?refresh=true" : ""}`, { method: "POST" });
+export const writeCaseNote = (id, refresh = false) =>
+  json(`/api/alerts/${id}/case-note${refresh ? "?refresh=true" : ""}`, { method: "POST" });
+export const ask = (messages) =>
+  json("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages }) });
+
+export const SUGGESTION = {
+  likely_fraud: { label: "Likely fraud", tone: "critical" },
+  likely_false_positive: { label: "Likely false positive", tone: "info" },
+  unsure: { label: "Unsure", tone: "muted" },
+};

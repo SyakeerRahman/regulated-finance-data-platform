@@ -19,14 +19,15 @@ from deltalake import DeltaTable
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from finplat import lake_browser, model_report, ops
+from finplat import assistant, lake_browser, model_report, ops, policy, prompts
 from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
 from finplat.generate import generate
 from finplat.live_stats import LiveStats
+from finplat.llm import LLM, LLMError
 from finplat.pipeline import GOLD, SILVER, append_bronze
 from finplat.quality import history as quality_history
 from finplat.registry import REGISTERED_MODEL, live_version, load_production, production_threshold, promote
@@ -48,6 +49,11 @@ LIVE_BATCH_PREFIX = "live-"
 STATIC = Path(__file__).parent / "static"
 
 
+def _python(values: dict) -> dict:
+    """numpy booleans and integers do not survive json.dumps, and this row goes to the stream."""
+    return {key: value.item() if hasattr(value, "item") else value for key, value in values.items()}
+
+
 class Engine:
     """One generator loop, one model, and the last few hundred results."""
 
@@ -60,6 +66,7 @@ class Engine:
         self.explainer = Explainer(self.model, FEATURE_COLUMNS)
         self.store = Store(settings.postgres_dsn)
         self.store.migrate()
+        self.llm = LLM(settings.llm_base_url, settings.llm_model, settings.llm_api_key)
         self.model_version = live_version(settings.mlflow_tracking_uri)
         self.threshold = production_threshold(settings.mlflow_tracking_uri)
         self.history = AccountHistory()
@@ -176,6 +183,11 @@ class Engine:
         alert = score >= self.threshold
         # SHAP walks every tree, so it runs for an alert and not for the 99% that pass.
         reasons = self.explainer.reasons(features) if alert else []
+        contributions = {reason.feature: round(reason.contribution, 4) for reason in reasons}
+        # The rule is cited here, by code, when the alert is raised. The language model only ever
+        # explains a rule that is already chosen.
+        facts = {**features, "country": transaction["country"]}
+        rules = [rule.rule_id for rule in policy.cite(facts, contributions)] if alert else []
 
         return {
             "transaction_id": transaction["transaction_id"],
@@ -192,7 +204,9 @@ class Engine:
             "threshold": round(self.threshold, 4),
             "model_version": self.model_version,
             "reason": sentence(reasons),
-            "contributions": {reason.feature: round(reason.contribution, 4) for reason in reasons},
+            "contributions": contributions,
+            "policy_rules": rules,
+            "features": _python(features) if alert else None,
         }
 
     async def reload_model(self) -> None:
@@ -317,7 +331,7 @@ def alerts(
         limit=max(1, min(limit, 200)),
         offset=max(0, offset),
     )
-    return {"alerts": rows, "total": total, "counts": engine.store.counts()}
+    return {"alerts": [_with_rules(row) for row in rows], "total": total, "counts": engine.store.counts()}
 
 
 @app.get("/api/alerts/summary")
@@ -356,6 +370,111 @@ def decide(alert_id: int, status: str) -> dict:
 @app.post("/api/labels/export")
 def export_labels() -> dict:
     return {"written": export_decisions(engine.store, engine.lake)}
+
+
+# --- stage G: the AI layer -----------------------------------------------------------------------
+# Sync endpoints on purpose. A model call takes seconds, and FastAPI runs a sync endpoint in a
+# worker thread, so the feed on the event loop never waits for one.
+
+
+def _with_rules(alert: dict) -> dict:
+    """An alert raised before stage G has no stored rule. Cite one now, from the fields it has."""
+    if not alert.get("policy_rules"):
+        alert["policy_rules"] = [rule.rule_id for rule in assistant.rules_for(alert)]
+    return alert
+
+
+def _alert_or_404(alert_id: int) -> dict:
+    alert = engine.store.get(alert_id)
+    if alert is None:
+        raise HTTPException(404, f"no alert {alert_id}")
+    return _with_rules(alert)
+
+
+def _require_llm() -> None:
+    if not engine.llm.enabled:
+        raise HTTPException(503, "The AI is off. Set LLM_API_KEY or DEEPSEEK_API_KEY in .env and restart the service.")
+
+
+def _toolbox() -> assistant.Toolbox:
+    def model_info() -> dict:
+        versions = cached("versions", 30, lambda: model_report.version_rows(engine.tracking_uri))
+        return {"live_version": engine.model_version, "threshold": engine.threshold, "versions": versions}
+
+    return assistant.Toolbox(engine.store, engine.lake, model_info)
+
+
+@app.get("/api/ai")
+def ai_status() -> dict:
+    return {
+        "enabled": engine.llm.enabled,
+        "model": engine.llm.model,
+        "base_url": engine.llm.base_url,
+        "prompts": prompts.versions(),
+        "agreement": engine.store.agreement(),
+    }
+
+
+@app.get("/api/policy")
+def policy_rules() -> dict:
+    return {"name": policy.POLICY_NAME, "rules": [rule.public() for rule in policy.RULES]}
+
+
+@app.get("/api/alerts/{alert_id}")
+def get_alert(alert_id: int) -> dict:
+    return _alert_or_404(alert_id)
+
+
+@app.post("/api/alerts/{alert_id}/narrative")
+def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
+    """Two sentences and a suggestion from the language model. Kept, so a second look costs nothing."""
+    alert = _alert_or_404(alert_id)
+    if alert["ai_summary"] and not refresh:
+        return alert
+    _require_llm()
+    try:
+        narrative = assistant.narrate(engine.llm, alert, engine.store.for_account(alert["account_id"]))
+    except LLMError as error:
+        raise HTTPException(502, str(error)) from error
+    saved = engine.store.save_narrative(alert_id, narrative, engine.llm.model, prompts.load("narrate").version)
+    return _with_rules({**alert, **saved})
+
+
+@app.post("/api/alerts/{alert_id}/case-note")
+def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
+    """The investigation agent reads the alert, the account and the policy, then writes a case note."""
+    alert = _alert_or_404(alert_id)
+    if alert["case_note"] and not refresh:
+        return {"alert": alert, "tools": []}
+    _require_llm()
+    try:
+        note = assistant.case_note(engine.llm, _toolbox(), alert_id)
+    except LLMError as error:
+        raise HTTPException(502, str(error)) from error
+    saved = engine.store.save_case_note(alert_id, note["answer"], note["model"], note["prompt_version"])
+    return {"alert": _with_rules({**alert, **saved}), "tools": note["tools"]}
+
+
+class Message(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=2_000)
+
+
+class Question(BaseModel):
+    # The browser keeps the conversation and sends it whole. A cap keeps one tab from sending a
+    # conversation long enough to cost real money on every question.
+    messages: list[Message] = Field(min_length=1, max_length=20)
+
+
+@app.post("/api/ask")
+def ask(body: Question) -> dict:
+    if body.messages[-1].role != "user":
+        raise HTTPException(400, "the last message must be the question")
+    _require_llm()
+    try:
+        return assistant.ask(engine.llm, _toolbox(), [message.model_dump() for message in body.messages])
+    except LLMError as error:
+        raise HTTPException(502, str(error)) from error
 
 
 _cache: dict[str, tuple[float, object]] = {}
