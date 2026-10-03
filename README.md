@@ -448,6 +448,31 @@ Five rules hold the layer in place:
 5. **Each answer keeps its prompt version.** The version is a hash of the prompt file in
    `finplat/prompts/`, so an edit changes it and nobody has to remember to.
 
+### How good the AI suggestion is
+
+The data is synthetic, so the true answer of every alert can be rebuilt from its id.
+`finplat/ai_eval.py` asks the AI about a sample of alerts, then joins the truth. It logs the
+result to the `ai-analyst` experiment in MLflow, and the Ask AI tab shows the newest one.
+
+```text
+docker compose exec api python -m finplat.ai_eval --alerts 100 --seed 23
+```
+
+Measured on 2026-10-03, on 100 alerts each:
+
+| Prompt | Right, when it answers | Always saying fraud | False alarms it spots | Fraud it calls a false alarm |
+| ------ | ---------------------- | ------------------- | --------------------- | ---------------------------- |
+| `3c0a0ee7` | 48% | 46% | 0% | 0% |
+| `473f87b9` | 92% | 38% | 82% | 13% |
+
+The first prompt called almost every alert fraud, so it added nothing to the score. Alerts just
+above the threshold are mostly honest: 1 in 8 is fraud below 0.99, and 19 in 20 above 0.999. The
+second prompt tells the model how to read the score. It was graded on a different sample from
+the one its numbers came from.
+
+The last column is the reason a person decides. An analyst who followed the AI alone would close
+13% of real fraud as false alarms.
+
 The model writes the narrative only when an analyst opens the alert, and the answer is stored.
 At 1 payment each second, about 860 alerts arrive each day, and most are never opened.
 

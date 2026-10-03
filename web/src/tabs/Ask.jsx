@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Panel, Pill } from "../components/Chrome.jsx";
 import { Icon } from "../components/Icons.jsx";
 import Markdown from "../components/Markdown.jsx";
-import { ask, getAi, getPolicy } from "../api.js";
+import { ask, getAi, getAiEvaluation, getPolicy } from "../api.js";
 
 const STARTERS = [
   "Which accounts had the most alerts this week?",
@@ -49,11 +49,13 @@ export default function Ask() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(null);
   const [policy, setPolicy] = useState(null);
+  const [evaluation, setEvaluation] = useState(null);
   const bottom = useRef(null);
 
   useEffect(() => {
     getAi().then(setStatus).catch(() => {});
     getPolicy().then(setPolicy).catch(() => {});
+    getAiEvaluation().then((answer) => setEvaluation(answer.evaluation)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -196,6 +198,34 @@ export default function Ask() {
             </ul>
             <p className="mt-2 text-[11px] text-ink-muted">Each version is a hash of the prompt file, and every AI answer stores the one that wrote it.</p>
           </div>
+        </Panel>
+
+        <Panel title="Graded against the truth" note="The AI's suggestions on past alerts, scored against the real answers">
+          {evaluation ? (
+            <div className="space-y-2 px-4 py-3 text-sm">
+              <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1">
+                {[
+                  ["Right, when it answers", evaluation.accuracy],
+                  ["Always saying fraud", evaluation.baseline_accuracy],
+                  ["False alarms it spots", evaluation.false_positives_caught],
+                  ["Fraud it calls a false alarm", evaluation.matrix ? evaluation.matrix.likely_false_positive.fraud / Math.max(1, Object.values(evaluation.matrix).reduce((n, row) => n + row.fraud, 0)) : null],
+                ].map(([label, value]) => (
+                  <div key={label} className="contents">
+                    <dt className="text-ink-2">{label}</dt>
+                    <dd className="tabular text-right text-ink">{value == null ? "-" : `${Math.round(value * 100)}%`}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="text-[11px] text-ink-muted">
+                {evaluation.alerts} alerts · {evaluation.model} · prompt {evaluation.prompt_version}. The last row is why a person decides: trusting
+                the AI alone would close that share of real fraud.
+              </p>
+            </div>
+          ) : (
+            <p className="px-4 py-3 text-sm text-ink-muted">
+              Not graded yet. Run <code className="rounded bg-white/10 px-1">python -m finplat.ai_eval</code>.
+            </p>
+          )}
         </Panel>
 
         <Panel title={policy?.name ?? "The policy"} note="Code picks the rule. The AI only explains it">

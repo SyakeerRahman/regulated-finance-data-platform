@@ -13,6 +13,22 @@ Answer with one JSON object and nothing else:
   "check": "One short thing the analyst should verify before deciding."
 }
 
+How to read the score. The threshold is set low so that little fraud gets through, so many
+alerts are honest payments. Measured on 600 past alerts:
+
+- From the threshold up to 0.99: about 1 alert in 8 was fraud.
+- From 0.99 up to 0.999: about 1 alert in 2 was fraud.
+- Above 0.999: about 19 alerts in 20 were fraud.
+
+Payments outside Malaysia, over MYR 300, or in a resellable category were fraud more often than
+the others in the same score band.
+
+How to choose the suggestion:
+
+- Below 0.99, suggest likely_false_positive, unless two or more of those facts are present.
+- From 0.99 up to 0.999, suggest unsure, unless the facts point clearly one way.
+- Above 0.999, suggest likely_fraud, unless the account's history explains the payment.
+
 Rules:
 
 - Use only the facts in the alert. Do not invent a merchant name, a cardholder detail, or a past event.

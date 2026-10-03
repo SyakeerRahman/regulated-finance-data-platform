@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from finplat import assistant, lake_browser, model_report, ops, policy, prompts
+from finplat import ai_eval, assistant, lake_browser, model_report, ops, policy, prompts
 from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
@@ -410,6 +410,15 @@ def ai_status() -> dict:
         "prompts": prompts.versions(),
         "agreement": engine.store.agreement(),
     }
+
+
+@app.get("/api/ai/evaluation")
+def ai_evaluation() -> dict:
+    """The newest score of the AI analyst against the true answers. `python -m finplat.ai_eval` writes it."""
+    try:
+        return {"evaluation": cached("ai-evaluation", 300, lambda: ai_eval.latest(engine.tracking_uri))}
+    except Exception as error:  # noqa: BLE001 - MLflow down is a missing panel, not a broken tab
+        return {"evaluation": None, "error": str(error)}
 
 
 @app.get("/api/policy")

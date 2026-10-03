@@ -123,6 +123,7 @@ export const getTrace = (id) => json(`/api/lake/trace/${encodeURIComponent(id)}`
 
 // Stage G: the AI layer.
 export const getAi = () => json("/api/ai");
+export const getAiEvaluation = () => json("/api/ai/evaluation");
 let policyRequest = null;
 /** The policy does not change while the page is open, so it is fetched once. */
 export const getPolicy = () => {

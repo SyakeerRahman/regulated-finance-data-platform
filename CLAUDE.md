@@ -77,6 +77,11 @@ third-party dependency needs it in `requirements-airflow.txt` and a `docker comp
 pyarrow, which replace the base image's own. Under the image's pandas 2 the bronze schema check
 fails every batch. The build runs `pip check`, so a conflicting pin fails the build.
 
+`data/mlflow/artifacts` must be writable by uid 50000. When the root `mlflow` container creates
+it first, it is 755 and the API and Airflow cannot log to it. Fix once:
+`MSYS_NO_PATHCONV=1 docker compose exec mlflow chmod -R a+rwX /mlflow/artifacts`. Without
+`MSYS_NO_PATHCONV=1`, Git Bash rewrites `/mlflow` into a Windows path.
+
 Both images run as uid 50000, group root. They share the lake volume, and a different uid would
 stop one from appending to a table the other created.
 
