@@ -72,7 +72,8 @@ services:
           memory: 1536m
 
   postgres:
-    image: postgres:18-alpine
+    # pgvector for the case search. See the note in ../docker-compose.yml on why the volume is new.
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: finplat
@@ -80,7 +81,7 @@ services:
       POSTGRES_DB: finplat
     volumes:
       # Postgres 18 wants the mount one level up. See the note in ../docker-compose.yml.
-      - pgdata:/var/lib/postgresql
+      - pgvector:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U finplat"]
       interval: 5s
@@ -117,5 +118,5 @@ services:
 volumes:
   airflow:
   lake:
-  pgdata:
+  pgvector:
   mlflow:

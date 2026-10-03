@@ -15,7 +15,8 @@ jobs:
     # Same user, password and port as the default DSN in finplat/settings.py.
     services:
       postgres:
-        image: postgres:18-alpine
+        # The same image as both compose files, so the vector extension exists in tests too.
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: finplat
           POSTGRES_PASSWORD: finplat

@@ -19,14 +19,16 @@ class Settings(BaseSettings):
     # The same seed and day always give the same batch, so a rerun is comparable to the first run.
     seed: int = 7
 
+    # The local defaults name 127.0.0.1, not localhost. The compose ports bind to 127.0.0.1 only,
+    # and on Windows localhost tries ::1 first: each connection waited about 8 s for the refusal.
     # The MLflow server. A file store cannot hold a model registry, so this is always a URL.
-    mlflow_tracking_uri: str = Field(default="http://localhost:8096", min_length=1)
+    mlflow_tracking_uri: str = Field(default="http://127.0.0.1:8096", min_length=1)
 
     # The Airflow API, for the Pipeline tab. The server stack reaches it by service name.
-    airflow_url: str = Field(default="http://localhost:8095", min_length=1)
+    airflow_url: str = Field(default="http://127.0.0.1:8095", min_length=1)
 
     # Alerts and analyst decisions. Port 5440 is this project's slot in the workspace port table.
-    postgres_dsn: str = Field(default="postgresql://finplat:finplat@localhost:5440/finplat", min_length=1)
+    postgres_dsn: str = Field(default="postgresql://finplat:finplat@127.0.0.1:5440/finplat", min_length=1)
 
     # Any API that speaks the OpenAI chat format. DeepSeek is the default because it is the cheapest
     # that calls tools well. The key is optional on purpose: without it the AI layer reports itself
