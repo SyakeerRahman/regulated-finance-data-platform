@@ -5,7 +5,9 @@ services:
     # Docker Desktop starts these again after a reboot, once it is running itself.
     restart: unless-stopped
     ports:
-      - "8095:8080"
+      # 127.0.0.1 on every port: every visitor is an Airflow admin and the Postgres password is
+      # in this file, so nothing here may answer to another machine on the network.
+      - "127.0.0.1:8095:8080"
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       # Local only: every visitor is an admin, so there is no generated password to look up.
@@ -30,7 +32,7 @@ services:
       dockerfile: Dockerfile.api
     restart: unless-stopped
     ports:
-      - "8097:8000"
+      - "127.0.0.1:8097:8000"
     # The LLM key and its settings. The values below replace the ones in .env that only make
     # sense outside a container.
     env_file: .env
@@ -61,7 +63,7 @@ services:
       --backend-store-uri sqlite:////mlflow/mlflow.db
       --default-artifact-root /mlflow/artifacts
     ports:
-      - "8096:5000"
+      - "127.0.0.1:8096:5000"
     volumes:
       - ./data/mlflow:/mlflow
 
@@ -75,7 +77,7 @@ services:
       POSTGRES_PASSWORD: finplat
       POSTGRES_DB: finplat
     ports:
-      - "5440:5432"
+      - "127.0.0.1:5440:5432"
     volumes:
       # Postgres 18 wants the mount one level up. A mount at /data leaves the real data
       # directory outside the volume and the container refuses to start.
