@@ -495,6 +495,13 @@ The dashboard has no login until Cloudflare Access is in front of it, and each A
 the owner's credit. `LLM_DAILY_CALLS` caps the model calls for each UTC day. The default is 500.
 After that, the AI endpoints answer 429 until 00:00 UTC. One question can use up to 6 calls.
 
+The case search turns text into vectors with `EMBED_MODEL`, by default
+`openai/text-embedding-3-small`, which returns 1536 numbers. It uses the chat model's base URL
+and key unless `EMBED_BASE_URL` and `EMBED_API_KEY` are set. DeepSeek has no embeddings, so with
+DeepSeek as the chat model, set both for another provider. `EMBED_DIM` must match the model and
+must be 2000 or less, the pgvector index limit. Each embedding request counts in
+`LLM_DAILY_CALLS`.
+
 DeepSeek processes requests on servers in China. The data here is synthetic. A real card issuer
 must not send card data to a provider outside its approved jurisdictions.
 

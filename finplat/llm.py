@@ -157,15 +157,20 @@ class LLM:
         return body
 
     def _open(self, body: dict):
-        request = urllib.request.Request(
-            f"{self.base_url.rstrip('/')}/chat/completions",
-            data=json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            return urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS)
-        except urllib.error.HTTPError as error:
-            # The provider's own message says what is wrong: a bad key, no balance, an unknown model.
-            detail = error.read().decode(errors="replace")[:300]
-            raise LLMError(f"{self.model} answered HTTP {error.code}: {detail}") from error
+        return post(self.base_url, "/chat/completions", self.api_key, body)
+
+
+def post(base_url: str, path: str, api_key: str | None, body: dict):
+    """One JSON POST in the OpenAI format. The response is open, for the caller to read or stream."""
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        return urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS)
+    except urllib.error.HTTPError as error:
+        # The provider's own message says what is wrong: a bad key, no balance, an unknown model.
+        detail = error.read().decode(errors="replace")[:300]
+        raise LLMError(f"{body.get('model')} answered HTTP {error.code}: {detail}") from error
