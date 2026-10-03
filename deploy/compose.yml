@@ -48,6 +48,11 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       AIRFLOW_URL: http://airflow:8080
       POSTGRES_DSN: postgresql://finplat:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/finplat
+      # Optional. With no key the AI layer reports itself off and every alert keeps its SHAP
+      # reason and its policy rule.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
     ports:
       - "127.0.0.1:8097:8000"
     volumes:

@@ -5,6 +5,7 @@ import Model from "./tabs/Model.jsx";
 import Pipeline from "./tabs/Pipeline.jsx";
 import Account from "./tabs/Account.jsx";
 import Data from "./tabs/Data.jsx";
+import Ask from "./tabs/Ask.jsx";
 import { Icon } from "./components/Icons.jsx";
 import { getState, start, stop } from "./api.js";
 
@@ -14,6 +15,7 @@ const TABS = [
   { key: "model", label: "Model", icon: "model", title: "Model", note: "How good the live model is, what it leans on, and whether the stream still looks like its training data" },
   { key: "pipeline", label: "Pipeline", icon: "pipeline", title: "Pipeline", note: "What runs, what it wrote, and whether each part answers" },
   { key: "data", label: "Data", icon: "database", title: "Data", note: "The lake, layer by layer: bronze, silver and gold, down to single rows" },
+  { key: "ask", label: "Ask AI", icon: "chat", title: "Ask AI", note: "Questions about the live data, answered with read-only tools" },
   { key: "account", label: "Account", icon: "account", title: "Account", note: "One account's history, features and alerts" },
 ];
 
@@ -203,6 +205,7 @@ export default function App() {
           {tab === "model" && <Model state={state} />}
           {tab === "pipeline" && <Pipeline state={state} />}
           {tab === "data" && <Data />}
+          {tab === "ask" && <Ask />}
           {tab === "account" && <Account initialId={accountId} />}
         </main>
 

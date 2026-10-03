@@ -60,6 +60,8 @@ const PATHS = {
   play: <path d="M7 5v14l11-7z" />,
   stop: <rect x="6" y="6" width="12" height="12" rx="1.5" />,
   pause: <path d="M9 5v14M15 5v14" />,
+  spark: <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z" />,
+  chat: <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5.1A8 8 0 1 1 21 12z" />,
   why: (
     <>
       <circle cx="12" cy="12" r="9" />

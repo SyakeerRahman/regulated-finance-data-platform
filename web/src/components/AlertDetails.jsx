@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Pill } from "./Chrome.jsx";
 import { Icon } from "./Icons.jsx";
+import { AiNarrative, PolicyCitation } from "./AiPanel.jsx";
 import { ALERT_STATUS, COUNTRY_NAMES, money, pretty, reasonLabel } from "../api.js";
 
 function CopyButton({ value, label }) {
@@ -126,6 +127,9 @@ export default function AlertDetails({ alert, onDecide, onClose, onOpenAccount }
             </ul>
           )}
         </div>
+
+        <PolicyCitation ruleIds={alert.policy_rules} />
+        <AiNarrative alert={alert} />
 
         <div className="flex flex-wrap gap-2">
           <button

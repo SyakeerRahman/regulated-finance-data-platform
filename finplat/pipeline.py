@@ -16,6 +16,10 @@ SILVER = "silver/transactions"
 LABELS = "silver/labels"
 GOLD = "gold/transaction_features"
 
+# The live feed appends to its own bronze partitions, named `live-<date>`. Their size depends on
+# how long the feed ran, so nothing that measures the daily batch may count them.
+LIVE_PREFIX = "live-"
+
 
 def replace_batch(path: str, frame: pd.DataFrame, batch_id: str) -> None:
     """Write one batch, replacing any earlier copy of it, and leave other batches alone."""
