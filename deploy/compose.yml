@@ -46,6 +46,7 @@ services:
     environment:
       LAKE_URI: /lake
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      AIRFLOW_URL: http://airflow:8080
       POSTGRES_DSN: postgresql://finplat:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/finplat
     ports:
       - "127.0.0.1:8097:8000"

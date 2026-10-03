@@ -147,3 +147,70 @@ def test_the_sentence_names_only_what_raised_the_score():
 
 def test_a_quiet_transaction_says_so():
     assert sentence([Reason("is_online", -1.0, "the card was present")]) == "Nothing in this transaction stands out."
+
+
+def test_the_top_reason_is_the_largest_push_upwards(store):
+    store.raise_alert(result("t-1"), "reason", {"amount": 0.4, "is_abroad": 2.1, "amount_vs_account": -3.0})
+
+    rows, total = store.search()
+    assert total == 1
+    # The largest magnitude pulls the score down. The reason is what pushed it up.
+    assert rows[0]["top_reason"] == "is_abroad"
+
+
+def test_search_filters_combine_and_count_every_match(store):
+    for index in range(5):
+        store.raise_alert({**result(f"abroad-{index}"), "country": "SG"}, "reason", {"is_abroad": 2.0})
+    for index in range(3):
+        store.raise_alert({**result(f"home-{index}"), "country": "MY"}, "reason", {"amount": 1.0})
+    store.decide(store.search(text="home-0")[0][0]["alert_id"], CONFIRMED)
+
+    page, total = store.search(country="SG", reason="is_abroad", limit=2)
+    assert total == 5
+    assert len(page) == 2
+
+    assert store.search(country="MY", status=OPEN)[1] == 2
+    assert store.search(text="HOME-")[1] == 3
+
+
+def test_a_bulk_decision_changes_only_the_selected_alerts(store):
+    ids = [store.raise_alert(result(f"t-{index}"), "reason", {}) for index in range(4)]
+
+    assert store.decide_many(ids[:3], FALSE_POSITIVE) == 3
+    assert store.counts() == {FALSE_POSITIVE: 3, OPEN: 1}
+    with pytest.raises(ValueError):
+        store.decide_many(ids, "probably")
+
+
+def test_the_summary_compares_the_last_day_with_the_day_before(store):
+    store.raise_alert(result("today"), "reason", {"amount": 1.0})
+    store.raise_alert(result("yesterday"), "reason", {"is_abroad": 1.0})
+    with store.connect() as connection:
+        connection.execute(
+            "update alerts set created_at = now() - interval '30 hours' where transaction_id = 'yesterday'"
+        )
+
+    now = pd.Timestamp.now(tz="UTC").to_pydatetime()
+    summary = store.summary(now)
+    assert summary["current"] == {OPEN: 1}
+    assert summary["reasons"] == [["amount", 1]]
+    # The store is only 30 hours old, so there is no whole day before this one to compare with.
+    assert summary["previous"] is None
+
+    with store.connect() as connection:
+        connection.execute(
+            "update alerts set created_at = now() - interval '47 hours' where transaction_id = 'yesterday'"
+        )
+        connection.execute(
+            "insert into alerts (transaction_id, account_id, amount, country, channel, category, occurred_at, score, threshold, reason, contributions, created_at) values ('old', 'A', 1, 'MY', 'chip', 'fuel', now(), 0.95, 0.9, 'r', '{}', now() - interval '50 hours')"
+        )
+    summary = store.summary(now)
+    assert summary["previous"] == {OPEN: 1}
+    assert sum(row["n"] for row in summary["hourly"]) == 1
+
+
+def test_reason_weights_average_each_feature_over_the_alerts_it_appears_in(store):
+    store.raise_alert(result("t-1"), "reason", {"amount": 3.0, "is_abroad": 1.0})
+    store.raise_alert(result("t-2"), "reason", {"amount": 1.0})
+
+    assert store.reason_weights() == [["amount", 2.0, 2], ["is_abroad", 1.0, 1]]

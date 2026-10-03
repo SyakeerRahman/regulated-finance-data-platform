@@ -11,7 +11,7 @@ import contextlib
 import json
 import time
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -19,17 +19,22 @@ from deltalake import DeltaTable
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from finplat import lake_browser, model_report, ops
 from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
 from finplat.generate import generate
+from finplat.live_stats import LiveStats
 from finplat.pipeline import GOLD, SILVER, append_bronze
 from finplat.quality import history as quality_history
-from finplat.registry import REGISTERED_MODEL, live_version, load_production, production_threshold, versions
+from finplat.registry import REGISTERED_MODEL, live_version, load_production, production_threshold, promote
 from finplat.settings import get_settings
 
 RECENT = 200
+# Live feature rows kept for the drift check. About 7 minutes at 50 a second.
+DRIFT_SAMPLE = 20_000
 DEFAULT_RATE = 1.0
 
 # Never one row at a time. Each Delta write makes a parquet file and a log entry, so a row for
@@ -50,6 +55,7 @@ class Engine:
         settings = get_settings()
         self.lake = settings.lake_uri
         self.tracking_uri = settings.mlflow_tracking_uri
+        self.airflow_url = settings.airflow_url
         self.model = load_production(settings.mlflow_tracking_uri)
         self.explainer = Explainer(self.model, FEATURE_COLUMNS)
         self.store = Store(settings.postgres_dsn)
@@ -63,6 +69,8 @@ class Engine:
         self.listeners: set[asyncio.Queue] = set()
         self.rate = DEFAULT_RATE
         self.scored = 0
+        self.sample: deque[dict] = deque(maxlen=DRIFT_SAMPLE)
+        self.stats = LiveStats(time.time())
         self._buffer: list[dict] = []
         self._flushed_at = time.monotonic()
         self.written = 0
@@ -71,6 +79,11 @@ class Engine:
         # pipeline uses, so the live data and the training data come from one place.
         self._pool = self._fill_pool(settings)
         self._next = 0
+        self.stats.note(
+            "service",
+            f"Started. Model v{self.model_version} loaded, {self.warmed:,} accounts warmed from silver",
+            time.time(),
+        )
 
     def _warm(self, lake: str) -> int:
         """Load the account history the batch pipeline already built. Redis holds this in stage E."""
@@ -92,6 +105,7 @@ class Engine:
     def start(self) -> None:
         if not self.running:
             self._task = asyncio.create_task(self._loop())
+            self.stats.note("feed", f"Feed started at {self.rate:g} payments a second", time.time())
 
     async def stop(self) -> None:
         if self._task:
@@ -99,13 +113,18 @@ class Engine:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+            self.stats.note("feed", "Feed stopped", time.time(), level="warning")
         # Whatever is still in the buffer belongs in the lake, not in a stopped process.
         await self._maybe_flush(force=True)
 
     async def _loop(self) -> None:
         while True:
             transaction = self._take()
-            self.publish(self.score(transaction))
+            started = time.perf_counter()
+            result = self.score(transaction)
+            # Features, the model and SHAP when it alerts. Not the stream or the lake write.
+            result["latency_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            self.publish(result)
             self._buffer.append(transaction)
             await self._maybe_flush()
             await asyncio.sleep(1 / self.rate)
@@ -120,7 +139,21 @@ class Engine:
         batch_id = LIVE_BATCH_PREFIX + pd.Timestamp.now(tz="UTC").date().isoformat()
         # A Delta write takes seconds. On the event loop it would stall the feed and every
         # browser watching it.
-        self.written += await asyncio.to_thread(append_bronze, self.lake, pd.DataFrame(rows), batch_id)
+        started = time.perf_counter()
+        try:
+            written = await asyncio.to_thread(append_bronze, self.lake, pd.DataFrame(rows), batch_id)
+        except Exception as error:
+            self.stats.note(
+                "lake", f"Write of {len(rows):,} rows to bronze failed: {error}", time.time(), level="error"
+            )
+            raise
+        self.written += written
+        self.stats.record_write(written, time.time())
+        self.stats.note(
+            "lake",
+            f"Wrote {written:,} rows to bronze ({batch_id}) in {time.perf_counter() - started:.1f} s",
+            time.time(),
+        )
 
     def _take(self) -> dict:
         transaction = dict(self._pool[self._next % len(self._pool)])
@@ -137,6 +170,7 @@ class Engine:
         # predict_proba, not predict. The class label would only ever say 0 or 1.
         score = float(self.model.predict_proba(matrix)[0, 1])
         self.history.add(account, float(transaction["amount"]))
+        self.sample.append({**features, "score": score})
         self.scored += 1
 
         alert = score >= self.threshold
@@ -161,8 +195,29 @@ class Engine:
             "contributions": {reason.feature: round(reason.contribution, 4) for reason in reasons},
         }
 
+    async def reload_model(self) -> None:
+        """Load whichever version the production alias points at. Called after a promotion."""
+
+        def load():
+            model = load_production(self.tracking_uri)
+            return (
+                model,
+                Explainer(model, FEATURE_COLUMNS),
+                live_version(self.tracking_uri),
+                production_threshold(self.tracking_uri),
+            )
+
+        loaded = await asyncio.to_thread(load)
+        # Assigned here, on the event loop, where the feed also runs. No payment can be scored
+        # between two of these lines, so none is scored by one version against another's threshold.
+        self.model, self.explainer, self.model_version, self.threshold = loaded
+        # The drift sample describes the old model's scores. Mixing the two would hide a change.
+        self.sample.clear()
+        self.stats.note("model", f"Loaded model v{self.model_version}, threshold {self.threshold:.3f}", time.time())
+
     def publish(self, result: dict) -> None:
         self.recent.appendleft(result)
+        self.stats.add(result, time.time())
         if result["alert"]:
             self.alerts.appendleft(result)
             self.store.raise_alert(result, result["reason"], result["contributions"])
@@ -199,6 +254,8 @@ def state() -> dict:
         "model_version": engine.model_version,
         "threshold": round(engine.threshold, 4),
         "recent": list(engine.recent)[:50],
+        "open_alerts": engine.store.counts().get("open", 0),
+        "live": engine.stats.snapshot(time.time()),
     }
 
 
@@ -206,7 +263,10 @@ def state() -> dict:
 async def start(rate: float = DEFAULT_RATE) -> dict:
     # async, not sync: FastAPI runs a sync endpoint in a worker thread, and asyncio.create_task
     # needs the loop that is running in the main thread.
-    engine.rate = max(0.1, min(rate, 50.0))
+    rate = max(0.1, min(rate, 50.0))
+    if engine.running and rate != engine.rate:
+        engine.stats.note("feed", f"Rate changed to {rate:g} payments a second", time.time())
+    engine.rate = rate
     engine.start()
     return {"running": True, "rate": engine.rate}
 
@@ -238,8 +298,44 @@ async def stream() -> StreamingResponse:
 
 
 @app.get("/api/alerts")
-def alerts(limit: int = 50, status: str | None = None) -> dict:
-    return {"alerts": engine.store.recent(limit=limit, status=status), "counts": engine.store.counts()}
+def alerts(
+    limit: int = 50,
+    offset: int = 0,
+    status: str | None = None,
+    country: str | None = None,
+    reason: str | None = None,
+    q: str | None = None,
+    hours: int | None = None,
+) -> dict:
+    since = datetime.now(UTC) - timedelta(hours=hours) if hours else None
+    rows, total = engine.store.search(
+        since=since,
+        status=status,
+        country=country,
+        reason=reason,
+        text=q,
+        limit=max(1, min(limit, 200)),
+        offset=max(0, offset),
+    )
+    return {"alerts": rows, "total": total, "counts": engine.store.counts()}
+
+
+@app.get("/api/alerts/summary")
+def alerts_summary() -> dict:
+    return engine.store.summary(datetime.now(UTC))
+
+
+class Decisions(BaseModel):
+    alert_ids: list[int]
+    status: str
+
+
+@app.post("/api/alerts/decisions")
+def decide_many(body: Decisions) -> dict:
+    """The same decision on every selected alert."""
+    if body.status not in DECISIONS:
+        raise HTTPException(400, f"status must be one of {DECISIONS}")
+    return {"changed": engine.store.decide_many(body.alert_ids, body.status)}
 
 
 @app.post("/api/alerts/{alert_id}/decision")
@@ -262,9 +358,148 @@ def export_labels() -> dict:
     return {"written": export_decisions(engine.store, engine.lake)}
 
 
+_cache: dict[str, tuple[float, object]] = {}
+
+
+def cached(key: str, seconds: float, read):
+    """The last answer while it is fresh. Every open browser polls, and the lake and Airflow
+    should not be asked once for each of them."""
+    now = time.monotonic()
+    hit = _cache.get(key)
+    if hit and now - hit[0] < seconds:
+        return hit[1]
+    value = read()
+    _cache[key] = (now, value)
+    return value
+
+
+def _checks() -> dict:
+    def postgres() -> str:
+        with engine.store.connect() as connection:
+            connection.execute("select 1")
+        return "Alerts store answering"
+
+    def lake() -> str:
+        return f"silver at version {DeltaTable(f'{engine.lake}/{SILVER}').version()}"
+
+    return {
+        "Scoring service": lambda: f"Model v{engine.model_version}, threshold {engine.threshold:.3f}",
+        "Postgres": postgres,
+        "Delta lake": lake,
+        "MLflow": ops.mlflow_check(engine.tracking_uri),
+        "Airflow": ops.airflow_check(engine.airflow_url),
+    }
+
+
+@app.get("/api/pipeline")
+def pipeline() -> dict:
+    """Everything the Pipeline tab shows that the live counts in /api/state do not."""
+    return {
+        "lake": cached("lake", 30, lambda: ops.lake_tables(engine.lake)),
+        "airflow": cached("airflow", 10, lambda: ops.airflow_jobs(engine.airflow_url)),
+        "health": cached("health", 10, lambda: ops.health(_checks())),
+        "feed": {
+            "running": engine.running,
+            "rate": engine.rate,
+            "listeners": len(engine.listeners),
+            "buffered": len(engine._buffer),
+            "written": engine.written,
+        },
+    }
+
+
+@app.post("/api/pipeline/dags/{dag_id}/trigger")
+def trigger_dag(dag_id: str) -> dict:
+    try:
+        answer = ops.trigger(engine.airflow_url, dag_id)
+    except Exception as error:
+        raise HTTPException(502, f"Airflow did not start the run: {error}") from error
+    _cache.pop("airflow", None)
+    engine.stats.note("airflow", f"Triggered {dag_id} ({answer['dag_run_id']})", time.time())
+    return answer
+
+
+@app.get("/api/lake/tables")
+def lake_tables() -> dict:
+    """Each table's size and state, and the batches of the partitioned ones."""
+
+    def read() -> dict:
+        tables = ops.lake_tables(engine.lake)
+        return {
+            "tables": tables,
+            "batches": {
+                row["table"]: lake_browser.batches(engine.lake, row["table"]) for row in tables if row["exists"]
+            },
+        }
+
+    return cached("lake-tables", 15, read)
+
+
+@app.get("/api/lake/rows")
+def lake_rows(table: str, batch: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0) -> dict:
+    if table not in ops.LAKE_TABLES:
+        raise HTTPException(404, f"no table {table}")
+    return lake_browser.page(engine.lake, table, batch=batch, text=q, limit=limit, offset=offset)
+
+
+@app.get("/api/lake/trace/{transaction_id}")
+def lake_trace(transaction_id: str) -> dict:
+    """One transaction in every layer, and the alert it raised, if any."""
+    with engine.store.connect() as connection:
+        alert = connection.execute("select * from alerts where transaction_id = %s", (transaction_id,)).fetchone()
+    return {**lake_browser.trace(engine.lake, transaction_id), "alert": alert}
+
+
 @app.get("/api/model")
 def model() -> dict:
-    return {"name": REGISTERED_MODEL, "live": engine.model_version, "versions": versions(engine.tracking_uri)}
+    return {
+        "name": REGISTERED_MODEL,
+        "live": engine.model_version,
+        "threshold": engine.threshold,
+        "type": type(engine.model).__name__,
+        "versions": cached("versions", 30, lambda: model_report.version_rows(engine.tracking_uri)),
+        "importance": {
+            "global": model_report.importance(engine.model),
+            "local": engine.store.reason_weights(),
+        },
+    }
+
+
+def _version(version: str) -> dict:
+    rows = cached("versions", 30, lambda: model_report.version_rows(engine.tracking_uri))
+    row = next((row for row in rows if row["version"] == version), None)
+    if row is None:
+        raise HTTPException(404, f"no version {version}")
+    return row
+
+
+@app.get("/api/model/evaluation")
+def model_evaluation(version: str) -> dict:
+    """Curves for one version. Recomputing an old version reads the lake and loads the model, a
+    few seconds, so the answer is kept for ten minutes."""
+    row = _version(version)
+    return cached(f"evaluation-{version}", 600, lambda: model_report.evaluation(engine.tracking_uri, engine.lake, row))
+
+
+@app.get("/api/model/drift")
+def model_drift() -> dict:
+    """The live stream against the data the production model was trained on."""
+    version = engine.model_version
+    row = _version(version)
+    reference = cached(
+        f"reference-{version}", 3600, lambda: model_report.reference(engine.model, engine.lake, row["label_cutoff"])
+    )
+    return {"version": version, **model_report.drift(reference, list(engine.sample))}
+
+
+@app.post("/api/model/versions/{version}/promote")
+async def promote_version(version: str) -> dict:
+    """Point production at another version, and load it into the running scorer."""
+    _version(version)
+    await asyncio.to_thread(promote, engine.tracking_uri, version)
+    await engine.reload_model()
+    _cache.pop("versions", None)
+    return {"live": engine.model_version, "threshold": engine.threshold}
 
 
 @app.get("/api/quality")

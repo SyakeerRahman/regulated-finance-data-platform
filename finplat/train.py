@@ -7,7 +7,7 @@ model in production cannot read a chargeback that has not happened yet.
 """
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 import mlflow
@@ -15,11 +15,13 @@ import pandas as pd
 from sklearn.metrics import average_precision_score, precision_recall_curve
 from xgboost import XGBClassifier
 
+from finplat.evaluation import curves
 from finplat.pipeline import training_frame
 from finplat.settings import get_settings
 
 EXPERIMENT = "fraud"
 REGISTERED_MODEL = "fraud_model"
+EVALUATION_ARTIFACT = "evaluation.json"
 
 # Not features: two identifiers, the time the split is made on, and the answer itself.
 NOT_FEATURES = ["transaction_id", "account_id", "ts", "is_fraud"]
@@ -44,6 +46,9 @@ class Result:
     metrics: dict[str, float]
     threshold: float
     features: list[str]
+    # ROC, precision-recall and a threshold table, measured on the test set. Logged with the
+    # model because the test set itself does not survive retention or a lake rebuild.
+    curves: dict = field(default_factory=dict)
 
 
 def features_of(frame: pd.DataFrame) -> list[str]:
@@ -89,6 +94,7 @@ def fit(train: pd.DataFrame, test: pd.DataFrame) -> Result:
         },
         threshold=float(cuts[best]),
         features=columns,
+        curves=curves(y_test, scored),
     )
 
 
@@ -104,6 +110,8 @@ def train_and_log(lake: str, as_of: pd.Timestamp, tracking_uri: str) -> Result:
         mlflow.log_params(PARAMS | {"label_cutoff": as_of.date().isoformat(), "holdout": HOLDOUT})
         mlflow.log_metrics(result.metrics)
         mlflow.log_param("threshold", result.threshold)
+        mlflow.log_metric("roc_auc", result.curves["roc_auc"])
+        mlflow.log_dict(result.curves, EVALUATION_ARTIFACT)
         mlflow.xgboost.log_model(
             result.model,
             name="model",

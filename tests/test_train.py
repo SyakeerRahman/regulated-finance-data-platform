@@ -45,3 +45,12 @@ def test_the_model_never_sees_the_answer(judged):
     assert "is_fraud" not in result.features
     # A leaked target shows up as a near-perfect score, so this is the tripwire for it.
     assert result.metrics["pr_auc"] < 0.99
+
+
+def test_the_logged_curves_are_the_test_set_the_metrics_came_from(judged):
+    """The curves are kept because the test set is not. They must describe that same test set."""
+    train, test = split_by_time(judged)
+    result = fit(train, test)
+    assert result.curves["rows"] == len(test)
+    assert result.curves["pr_auc"] == pytest.approx(result.metrics["pr_auc"])
+    assert result.curves["positives"] == int(test["is_fraud"].sum())
