@@ -30,6 +30,29 @@ NOT_FEATURES = ["transaction_id", "account_id", "ts", "is_fraud"]
 # from Thursday to predict Wednesday, and no production model ever gets that.
 HOLDOUT = 0.2
 
+# Below these, the test set holds a handful of cases of one kind and its PR-AUC is noise. A model
+# promoted on noise is worse than the one already live. Both kinds are counted, because they
+# arrive at different speeds: a chargeback after 30 to 90 days, an honest verdict only when the
+# 90-day dispute window closes. For weeks after a fresh start, every known verdict is fraud.
+MIN_FRAUD = 50
+MIN_HONEST = 1_000
+
+
+class NotEnoughLabels(ValueError):
+    """Too few verdicts are known at the cutoff to train and measure a model."""
+
+
+def check_labels(frame: pd.DataFrame) -> None:
+    fraud = int(frame["is_fraud"].sum()) if len(frame) else 0
+    honest = len(frame) - fraud
+    if fraud < MIN_FRAUD or honest < MIN_HONEST:
+        raise NotEnoughLabels(
+            f"{fraud:,} fraud and {honest:,} honest verdicts are known at the cutoff. Training needs "
+            f"{MIN_FRAUD:,} and {MIN_HONEST:,}. A chargeback arrives 30 to 90 days after its payment, "
+            "and an honest verdict only after the 90-day dispute window."
+        )
+
+
 PARAMS = {
     "n_estimators": 300,
     "max_depth": 5,
@@ -101,6 +124,9 @@ def fit(train: pd.DataFrame, test: pd.DataFrame) -> Result:
 def train_and_log(lake: str, as_of: pd.Timestamp, tracking_uri: str) -> Result:
     """Fit a model and record the run, so a later reader can tell which model decided what."""
     frame = training_frame(lake, as_of)
+    # Seen on 2026-10-03: a weekly run with no label yet known crashed with an IndexError deep in
+    # the metrics. The reason belongs in the first line of the log.
+    check_labels(frame)
     train, test = split_by_time(frame)
     result = fit(train, test)
 
