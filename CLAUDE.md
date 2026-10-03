@@ -17,7 +17,8 @@ The workspace rules are in `C:\Users\User\Project\CLAUDE.md`.
 | Lint | `uv run ruff check .` |
 | Format | `uv run ruff format .` |
 | One day of the pipeline, no Airflow | `uv run python -m finplat.run 2026-09-01` |
-| Airflow | `docker compose up -d --build`, then http://localhost:8095 |
+| The whole local stack: Airflow, API, MLflow, Postgres | `docker compose up -d --build`, then http://localhost:8097 (dashboard) and http://localhost:8095 (Airflow) |
+| Grade the AI analyst against the true answers | `docker compose exec api python -m finplat.ai_eval --alerts 100 --seed 23` |
 | Rebuild the Airflow image after a dependency change | `docker compose build` |
 
 `.env` with `LAKE_URI=data/lake` must exist before any command that touches the lake. The settings
@@ -27,6 +28,9 @@ class has no default for it, so a missing value stops startup.
 
 `finplat` holds all the logic. Everything else calls it.
 
+- `feed.py` gives the live feed its payments. Round 0 of a day is that day's batch. Each later
+  round draws new rows with ids such as `20261003-r2-0000123`, so the alert store never sees a
+  replay. `generate(..., round_=0)` gives exactly the rows it gave before rounds existed.
 - `generate.py` makes one day of synthetic transactions and injects broken rows on purpose
   (`DUPLICATE_RATE`, `MISSING_ACCOUNT_RATE`, `BAD_AMOUNT_RATE`). Those constants are what gives the
   silver layer work to do, and the tests assert that quarantine and duplicate counts are above zero.
@@ -92,7 +96,9 @@ domain, so work that needs neither comes first.
 
 Stage G (AI layer) is built on branch `stage-g-ai`, ahead of the VPS: policy citation, AI analyst
 on each alert, case-note agent, Ask AI tab, agreement metric. `finplat/assistant.py` holds it.
-Tests use a fake model, so the suite never calls a real one. Read
+Tests use a fake model, so the suite never calls a real one. The AI suggestion is graded
+against the true answers by `finplat/ai_eval.py`: change the narrate prompt, then grade it on a
+`--seed` it was not tuned on. Model calls are capped by `LLM_DAILY_CALLS`. Read
 `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md` before changing who picks the
 rule or what the tools may do.
 
