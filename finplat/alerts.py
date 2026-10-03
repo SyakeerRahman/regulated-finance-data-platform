@@ -27,6 +27,9 @@ DECISIONS = (CONFIRMED, FALSE_POSITIVE)
 TOP_REASON = "(select key from jsonb_each_text(contributions) order by value::float desc limit 1)"
 
 SCHEMA = """
+-- The case search stores embeddings. The image must ship pgvector: pgvector/pgvector:pg18.
+create extension if not exists vector;
+
 create table if not exists alerts (
     alert_id        bigserial primary key,
     transaction_id  text not null unique,

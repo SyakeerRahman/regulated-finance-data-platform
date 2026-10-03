@@ -68,7 +68,10 @@ services:
       - ./data/mlflow:/mlflow
 
   postgres:
-    image: postgres:18-alpine
+    # pgvector for the case search. The Debian image, so a volume made by the old Alpine image is
+    # never mounted here: the two sort text differently, and its text indexes would be wrong.
+    # The data moved with pg_dump and a restore, which rebuilds every index.
+    image: pgvector/pgvector:pg18
     # Named, so `docker ps` on a machine running several projects says which one holds 5440.
     container_name: finplat-postgres
     restart: unless-stopped
@@ -81,12 +84,12 @@ services:
     volumes:
       # Postgres 18 wants the mount one level up. A mount at /data leaves the real data
       # directory outside the volume and the container refuses to start.
-      - finplat-pgdata:/var/lib/postgresql
+      - finplat-pgvector:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U finplat"]
       interval: 5s
       retries: 10
 
 volumes:
-  finplat-pgdata:
+  finplat-pgvector:
   airflow-state:
