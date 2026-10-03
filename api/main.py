@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from finplat import ai_eval, assistant, lake_browser, model_report, ops, policy, prompts
 from finplat.alerts import DECISIONS, Store, export_decisions
+from finplat.embed import Embedder
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
 from finplat.feed import Pool
@@ -65,8 +66,16 @@ class Engine:
         self.explainer = Explainer(self.model, FEATURE_COLUMNS)
         self.store = Store(settings.postgres_dsn)
         self.store.migrate()
-        self.llm = LLM(
-            settings.llm_base_url, settings.llm_model, settings.llm_api_key, Budget(settings.llm_daily_calls)
+        # One budget for both: every request spends the same owner's credit.
+        budget = Budget(settings.llm_daily_calls)
+        self.llm = LLM(settings.llm_base_url, settings.llm_model, settings.llm_api_key, budget)
+        # `or`, not a default: the server compose file passes an unset variable as an empty string.
+        self.embedder = Embedder(
+            settings.embed_base_url or settings.llm_base_url,
+            settings.embed_model,
+            settings.embed_dim,
+            settings.embed_api_key or settings.llm_api_key,
+            budget,
         )
         self.model_version = live_version(settings.mlflow_tracking_uri)
         self.threshold = production_threshold(settings.mlflow_tracking_uri)
@@ -411,6 +420,12 @@ def ai_status() -> dict:
         "base_url": engine.llm.base_url,
         "prompts": prompts.versions(),
         "agreement": engine.store.agreement(),
+        "embeddings": {
+            "enabled": engine.embedder.enabled,
+            "model": engine.embedder.model,
+            "dim": engine.embedder.dim,
+            "base_url": engine.embedder.base_url,
+        },
     }
 
 

@@ -54,6 +54,11 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
       LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
       LLM_DAILY_CALLS: ${LLM_DAILY_CALLS:-500}
+      # The case search. Empty base URL and key mean the chat model's.
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+      EMBED_API_KEY: ${EMBED_API_KEY:-}
+      EMBED_MODEL: ${EMBED_MODEL:-openai/text-embedding-3-small}
+      EMBED_DIM: ${EMBED_DIM:-1536}
     ports:
       - "127.0.0.1:8097:8000"
     volumes:

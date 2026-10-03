@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     # Model calls for each UTC day. One question can cost up to 6 calls, so 500 is about 100 questions.
     llm_daily_calls: int = Field(default=500, gt=0)
 
+    # Text to vectors, for the case search. Each request counts in llm_daily_calls too. The base URL
+    # and the key are the chat model's unless set: OpenRouter serves both. DeepSeek has no
+    # embeddings, so a DeepSeek chat model needs EMBED_BASE_URL and EMBED_API_KEY for another provider.
+    embed_base_url: str | None = None
+    embed_api_key: str | None = None
+    embed_model: str = Field(default="openai/text-embedding-3-small", min_length=1)
+    # The length of each vector, fixed by the model. At most 2000: a pgvector HNSW index on the
+    # vector type takes no more.
+    embed_dim: int = Field(default=1536, gt=0, le=2000)
+
 
 def get_settings() -> Settings:
     return Settings()

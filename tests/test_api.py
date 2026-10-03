@@ -9,17 +9,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.main
+from finplat.embed import Embedder
 from finplat.llm import LLM, Budget
 from tests.test_ai import SPIKE_ABROAD, FakeLLM
 from tests.test_alerts import result, store, test_dsn  # noqa: F401 - pytest finds fixtures by name
 
 OFF = LLM("https://api.deepseek.com", "deepseek-chat", None, Budget(10))
+EMBED_OFF = Embedder("https://openrouter.ai/api/v1", "openai/text-embedding-3-small", 1536, None, OFF.budget)
 
 
 class Engine:
     def __init__(self, store, llm=OFF) -> None:  # noqa: F811
         self.store = store
         self.llm = llm
+        self.embedder = EMBED_OFF
         self.lake = ""
         self.model_version = "3"
         self.threshold = 0.9025
@@ -95,6 +98,12 @@ def test_the_status_reports_the_budget_and_the_prompts(client):
     assert status["enabled"] is False
     assert status["budget"] == {"used": 0, "per_day": 10}
     assert set(status["prompts"]) == {"ask", "case_note", "narrate"}
+    assert status["embeddings"] == {
+        "enabled": False,
+        "model": "openai/text-embedding-3-small",
+        "dim": 1536,
+        "base_url": "https://openrouter.ai/api/v1",
+    }
 
 
 # --- alerts --------------------------------------------------------------------------------------
