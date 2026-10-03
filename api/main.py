@@ -25,7 +25,7 @@ from finplat import assistant, lake_browser, model_report, ops, policy, prompts
 from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
-from finplat.generate import generate
+from finplat.feed import Pool
 from finplat.live_stats import LiveStats
 from finplat.llm import LLM, LLMError
 from finplat.pipeline import GOLD, LIVE_PREFIX, SILVER, append_bronze
@@ -79,10 +79,9 @@ class Engine:
         self._flushed_at = time.monotonic()
         self.written = 0
         self._task: asyncio.Task | None = None
-        # One day of transactions, replayed in a loop. The generator is the same one the batch
-        # pipeline uses, so the live data and the training data come from one place.
-        self._pool = self._fill_pool(settings)
-        self._next = 0
+        # The generator is the same one the batch pipeline uses, so the live data and the training
+        # data come from one place.
+        self.pool = Pool(settings.seed, settings.accounts)
         self.stats.note(
             "service",
             f"Started. Model v{self.model_version} loaded, {self.warmed:,} accounts warmed from silver",
@@ -93,14 +92,6 @@ class Engine:
         """Load the account history the batch pipeline already built. Redis holds this in stage E."""
         silver = DeltaTable(f"{lake}/{SILVER}").to_pandas(columns=["account_id", "amount"])
         return self.history.warm(silver)
-
-    @staticmethod
-    def _fill_pool(settings) -> list[dict]:
-        transactions, _ = generate(datetime.now(UTC).date(), 20_000, settings.seed, settings.accounts)
-        clean = transactions[transactions["account_id"].notna() & (transactions["amount"] > 0)]
-        # Shuffled, because the feed stamps its own clock on each row. In time order the pool
-        # opens on the small hours, where fraud concentrates, and the first minute is all alerts.
-        return clean.sample(frac=1, random_state=settings.seed).to_dict("records")
 
     @property
     def running(self) -> bool:
@@ -162,9 +153,8 @@ class Engine:
         )
 
     def _take(self) -> dict:
-        transaction = dict(self._pool[self._next % len(self._pool)])
-        self._next += 1
-        # The pool is one fixed day. Stamp the real clock on it so the feed reads as live.
+        transaction = self.pool.take()
+        # The pool holds whole days. Stamp the real clock on each row so the feed reads as live.
         transaction["ts"] = pd.Timestamp.now(tz="UTC")
         return transaction
 
