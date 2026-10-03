@@ -214,3 +214,33 @@ def test_reason_weights_average_each_feature_over_the_alerts_it_appears_in(store
     store.raise_alert(result("t-2"), "reason", {"amount": 1.0})
 
     assert store.reason_weights() == [["amount", 2.0, 2], ["is_abroad", 1.0, 1]]
+
+
+def test_the_most_similar_alert_shares_the_pattern(store):
+    """Abroad, online, resellable and large: the twin comes first, the corner-shop payment last."""
+    pattern = {"country": "SG", "channel": "online", "merchant_category": "electronics"}
+    target = store.raise_alert(
+        {**result("target"), **pattern, "amount": 900.0, "score": 0.9995}, "r", {"is_abroad": 2.0}
+    )
+    twin = store.raise_alert({**result("twin"), **pattern, "amount": 850.0, "score": 0.9990}, "r", {"is_abroad": 1.5})
+    cousin = store.raise_alert(
+        {**result("cousin"), **pattern, "country": "MY", "amount": 300.0, "score": 0.97}, "r", {"amount": 1.0}
+    )
+    stranger = store.raise_alert(
+        {
+            **result("stranger"),
+            "country": "MY",
+            "channel": "chip",
+            "merchant_category": "grocery",
+            "amount": 12.0,
+            "score": 0.91,
+        },
+        "r",
+        {"amount_vs_account": 1.0},
+    )
+
+    similar = store.similar(target, limit=3)
+
+    assert [row["alert_id"] for row in similar] == [twin, cousin, stranger]
+    assert similar[0]["distance"] < similar[1]["distance"] < similar[2]["distance"]
+    assert target not in [row["alert_id"] for row in similar]

@@ -195,6 +195,12 @@ TOOLS = [
         ("account_id",),
     ),
     _tool(
+        "similar_alerts",
+        "The past alerts whose payments look most like this one, with what analysts decided about them.",
+        {"alert_id": {"type": "integer"}, "limit": {"type": "integer", "description": "At most 10"}},
+        ("alert_id",),
+    ),
+    _tool(
         "alert_stats",
         "Alert counts by status and by top reason, for the last N hours.",
         {"hours": {"type": "integer", "description": "Default 24"}},
@@ -294,6 +300,15 @@ class Toolbox:
         if alert is None:
             return {"error": f"there is no alert {alert_id}"}
         return {**compact(alert), "features": alert.get("features"), "rules": [r.public() for r in rules_for(alert)]}
+
+    def tool_similar_alerts(self, alert_id, limit=5) -> dict:
+        rows = self.store.similar(int(alert_id), max(1, min(int(limit or 5), 10)))
+        decided = [row["status"] for row in rows if row["status"] != "open"]
+        return {
+            "similar": _plain(rows),
+            "decided": {status: decided.count(status) for status in set(decided)},
+            "note": "A smaller distance is more alike. Open alerts have no decision yet.",
+        }
 
     def tool_account_history(self, account_id, limit=15) -> dict:
         import pyarrow.compute as pc
@@ -469,10 +484,28 @@ def ask(llm: LLM, toolbox: Toolbox, messages: list[dict], on_event: Callable[[di
 
 
 def case_note(llm: LLM, toolbox: Toolbox, alert_id: int) -> dict:
+    """The evidence is collected by code, then the model writes the note and may read more.
+
+    Seen on 2026-10-03: told to read the account and the similar alerts, the model read only the
+    alert and the policy, and wrote a note without them. Evidence a note must hold is not left to
+    the model's choice.
+    """
     prompt = prompts.load("case_note")
-    answer = run_agent(
-        llm, toolbox, prompt.text, [{"role": "user", "content": f"Write the case note for alert #{alert_id}."}]
+    evidence = {
+        "alert": toolbox.run("get_alert", {"alert_id": alert_id}),
+        "account": toolbox.run("account_history", {"account_id": toolbox.store.get(alert_id)["account_id"]}),
+        "similar_alerts": toolbox.run("similar_alerts", {"alert_id": alert_id}),
+    }
+    gathered = [
+        {"tool": name, "arguments": {"alert_id": alert_id}}
+        for name in ("get_alert", "account_history", "similar_alerts")
+    ]
+    request = (
+        f"Write the case note for alert #{alert_id}. The evidence below is already read for you. "
+        "Use a tool only for something it does not hold.\n\n"
+        + json.dumps(evidence, default=str)[: TOOL_RESULT_CHARS * 2]
     )
+    answer = run_agent(llm, toolbox, prompt.text, [{"role": "user", "content": request}])
     if not answer["answer"]:
         raise LLMError("the case note is empty")
-    return {**answer, "prompt_version": prompt.version, "model": llm.model}
+    return {**answer, "tools": gathered + answer["tools"], "prompt_version": prompt.version, "model": llm.model}

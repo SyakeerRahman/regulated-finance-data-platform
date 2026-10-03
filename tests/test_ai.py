@@ -428,3 +428,33 @@ def test_text_streamed_before_a_tool_call_is_taken_back():
     after = events[kinds.index("discard") + 1 :]
     assert "v3.2" not in "".join(event.get("text", "") for event in after)
     assert answer["answer"] == "Alert #8 is MYR 153.14."
+
+
+def test_a_case_note_gets_its_evidence_from_code_not_from_the_model():
+    """Seen live: told to read the account and the similar alerts, the model read neither."""
+
+    class Store:
+        @staticmethod
+        def get(alert_id) -> dict:
+            return {"account_id": "ACC39002"}
+
+    class Evidence(Box):
+        def __init__(self) -> None:
+            super().__init__()
+            # The alert store, which the case note asks only for the account id.
+            self.store = Store()
+
+        def tool_account_history(self, account_id, limit=15) -> dict:
+            return {"account_id": account_id, "average_spend": 8.51}
+
+        def tool_similar_alerts(self, alert_id, limit=5) -> dict:
+            return {"decided": {"confirmed_fraud": 3}}
+
+    llm = FakeLLM([{"content": "## Summary\nFraud."}])
+
+    note = assistant.case_note(llm, Evidence(), 8)
+
+    request = llm.requests[0][-1]["content"]
+    assert '"average_spend": 8.51' in request
+    assert '"confirmed_fraud": 3' in request
+    assert [call["tool"] for call in note["tools"]] == ["get_alert", "account_history", "similar_alerts"]

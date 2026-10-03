@@ -433,6 +433,12 @@ def get_alert(alert_id: int) -> dict:
     return _alert_or_404(alert_id)
 
 
+@app.get("/api/alerts/{alert_id}/similar")
+def similar_alerts(alert_id: int, limit: int = 5) -> dict:
+    _alert_or_404(alert_id)
+    return {"similar": engine.store.similar(alert_id, max(1, min(limit, 20)))}
+
+
 @app.post("/api/alerts/{alert_id}/narrative")
 def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
     """Two sentences and a suggestion from the language model. Kept, so a second look costs nothing."""

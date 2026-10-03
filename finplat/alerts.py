@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 import psycopg
 from psycopg.rows import dict_row
 
+from finplat.domain import HOME_COUNTRY, RISKY_CATEGORIES
+
 OPEN = "open"
 CONFIRMED = "confirmed_fraud"
 FALSE_POSITIVE = "false_positive"
@@ -124,6 +126,44 @@ class Store:
         with self.connect() as connection:
             return connection.execute(
                 "select * from alerts where account_id = %s order by created_at desc limit %s", (account_id, limit)
+            ).fetchall()
+
+    def similar(self, alert_id: int, limit: int = 5) -> list[dict]:
+        """The alerts whose payments look most like this one, nearest first.
+
+        Distance is measured on what every alert row holds, old or new: the amount on a log
+        scale, the score, abroad, online, a resellable category, night, and the top SHAP reason.
+        Exact, in SQL, over every alert. At tens of thousands of rows that takes milliseconds,
+        and pgvector would need a new Postgres image. See the decision record of 2026-10-03.
+        """
+        risky = ", ".join(f"'{category}'" for category in sorted(RISKY_CATEGORIES))
+
+        def differs(fact: str) -> str:
+            return f"case when ({fact.format(t='a')}) is distinct from ({fact.format(t='t')}) then 1 else 0 end"
+
+        distance = " + ".join(
+            [
+                "power(ln(greatest(a.amount, 0.01)) - ln(greatest(t.amount, 0.01)), 2)",
+                # -log10(1 - score) spreads the top of the scale, where 0.99 and 0.999 differ most.
+                "0.5 * power(-log(greatest(1 - a.score, 1e-6)) + log(greatest(1 - t.score, 1e-6)), 2)",
+                differs(f"{{t}}.country <> '{HOME_COUNTRY}'"),
+                differs("{t}.channel = 'online'"),
+                differs(f"{{t}}.category in ({risky})"),
+                differs("extract(hour from {t}.occurred_at at time zone 'UTC') < 6"),
+                differs(TOP_REASON.replace("contributions", "{t}.contributions")),
+            ]
+        )
+        with self.connect() as connection:
+            return connection.execute(
+                f"""
+                select a.alert_id, a.account_id, a.amount, a.country, a.category, a.channel, a.score,
+                       a.status, a.created_at, round(({distance})::numeric, 3) as distance
+                from alerts a, (select * from alerts where alert_id = %(id)s) t
+                where a.alert_id <> t.alert_id
+                order by {distance}, a.created_at desc
+                limit %(limit)s
+                """,
+                {"id": alert_id, "limit": limit},
             ).fetchall()
 
     def save_narrative(self, alert_id: int, narrative: dict, model: str, prompt_version: str) -> dict | None:

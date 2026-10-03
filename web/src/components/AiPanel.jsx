@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Pill } from "./Chrome.jsx";
 import { Icon } from "./Icons.jsx";
 import Markdown from "./Markdown.jsx";
-import { SUGGESTION, getAi, getPolicy, narrate, writeCaseNote } from "../api.js";
+import { ALERT_STATUS, SUGGESTION, getAi, getPolicy, getSimilar, money, narrate, pretty, writeCaseNote } from "../api.js";
 
 let statusRequest = null;
 const aiStatus = () => {
@@ -202,6 +202,45 @@ export function AiNarrative({ alert }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** The alerts whose payments look most like this one, and what analysts decided about them. */
+export function SimilarAlerts({ alertId }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    setRows(null);
+    getSimilar(alertId).then((answer) => setRows(answer.similar)).catch(() => setRows([]));
+  }, [alertId]);
+
+  if (!rows?.length) return null;
+  const decided = rows.filter((row) => row.status !== "open");
+  const confirmed = decided.filter((row) => row.status === "confirmed_fraud").length;
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+      <div className="flex items-center gap-2 text-sm font-medium text-ink">
+        Similar alerts
+        <span className="ml-auto text-xs font-normal text-ink-muted">
+          {decided.length ? `${confirmed} of ${decided.length} decided were fraud` : "none decided yet"}
+        </span>
+      </div>
+      <ul className="mt-2 space-y-1 text-xs">
+        {rows.map((row) => {
+          const status = ALERT_STATUS[row.status] ?? ALERT_STATUS.open;
+          return (
+            <li key={row.alert_id} className="grid grid-cols-[3.5rem_5rem_minmax(0,1fr)_auto] items-center gap-2">
+              <span className="tabular text-ink-muted">#{row.alert_id}</span>
+              <span className="tabular text-right text-ink">{money(row.amount)}</span>
+              <span className="truncate text-ink-2">
+                {row.country} · {pretty(row.category)} · {row.channel}
+              </span>
+              <Pill tone={status.tone}>{status.label}</Pill>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
