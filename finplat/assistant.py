@@ -388,16 +388,35 @@ class Toolbox:
 # --- the agent loop ------------------------------------------------------------------------------
 
 
-def run_agent(llm: LLM, toolbox: Toolbox, system: str, messages: list[dict]) -> dict:
-    """Let the model call tools until it answers. The last round must answer, with no tools."""
+def run_agent(
+    llm: LLM, toolbox: Toolbox, system: str, messages: list[dict], on_event: Callable[[dict], None] | None = None
+) -> dict:
+    """Let the model call tools until it answers. The last round must answer, with no tools.
+
+    With `on_event`, the answer streams: a `tool` event as each tool runs, a `delta` event for each
+    piece of text, and `discard` when text already sent turns out to come before a tool call.
+    """
     conversation = [{"role": "system", "content": system}, *messages]
     used = []
     seen: set[str] = set()
     empty = 0
     for round_number in range(MAX_TOOL_ROUNDS):
         last = round_number == MAX_TOOL_ROUNDS - 1
-        reply = llm.chat(conversation, tools=TOOLS, tool_choice="none" if last else None, max_tokens=900)
+        options = {"tools": TOOLS, "tool_choice": "none" if last else None, "max_tokens": 900}
+        streamed: list[str] = []
+        if on_event:
+
+            def send(text: str, streamed=streamed) -> None:
+                streamed.append(text)
+                on_event({"type": "delta", "text": text})
+
+            reply = llm.stream(conversation, on_text=send, **options)
+        else:
+            reply = llm.chat(conversation, **options)
         calls = reply.get("tool_calls") or []
+        if calls and streamed:
+            # The same rule as below, for a reader who has already seen the guess.
+            on_event({"type": "discard"})
         if not calls:
             answer = (reply.get("content") or "").strip()
             if answer:
@@ -429,6 +448,8 @@ def run_agent(llm: LLM, toolbox: Toolbox, system: str, messages: list[dict]) -> 
                 result = {"error": f"The limit of {MAX_TOOL_CALLS} tool calls is reached. Answer with what you have."}
             else:
                 seen.add(key)
+                if on_event:
+                    on_event({"type": "tool", "tool": name})
                 result = toolbox.run(name, arguments)
                 used.append({"tool": name, "arguments": arguments})
             conversation.append(
@@ -441,9 +462,10 @@ def run_agent(llm: LLM, toolbox: Toolbox, system: str, messages: list[dict]) -> 
     raise LLMError(f"no answer after {MAX_TOOL_ROUNDS} rounds of tool calls")
 
 
-def ask(llm: LLM, toolbox: Toolbox, messages: list[dict]) -> dict:
+def ask(llm: LLM, toolbox: Toolbox, messages: list[dict], on_event: Callable[[dict], None] | None = None) -> dict:
     prompt = prompts.load("ask")
-    return {**run_agent(llm, toolbox, prompt.text, messages), "prompt_version": prompt.version, "model": llm.model}
+    answer = run_agent(llm, toolbox, prompt.text, messages, on_event)
+    return {**answer, "prompt_version": prompt.version, "model": llm.model}
 
 
 def case_note(llm: LLM, toolbox: Toolbox, alert_id: int) -> dict:

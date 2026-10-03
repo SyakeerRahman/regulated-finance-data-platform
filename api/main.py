@@ -9,10 +9,12 @@ React app in front. The shape stays: one loop in, one score, one stream out.
 import asyncio
 import contextlib
 import json
+import threading
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from queue import SimpleQueue
 
 import pandas as pd
 from deltalake import DeltaTable
@@ -472,15 +474,53 @@ class Question(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=20)
 
 
-@app.post("/api/ask")
-def ask(body: Question) -> dict:
+def _question(body: Question) -> list[dict]:
     if body.messages[-1].role != "user":
         raise HTTPException(400, "the last message must be the question")
     _require_llm()
+    return [message.model_dump() for message in body.messages]
+
+
+@app.post("/api/ask")
+def ask(body: Question) -> dict:
+    messages = _question(body)
     try:
-        return assistant.ask(engine.llm, _toolbox(), [message.model_dump() for message in body.messages])
+        return assistant.ask(engine.llm, _toolbox(), messages)
     except LLMError as error:
         raise _llm_failure(error) from error
+
+
+@app.post("/api/ask/stream")
+def ask_stream(body: Question) -> StreamingResponse:
+    """The same answer as /api/ask, sent as it is made.
+
+    A question took 10 to 19 seconds with nothing on screen. Now the page shows each tool as the
+    agent calls it, then the answer as it is written. Server-sent events over a POST, because the
+    question is a body, and EventSource can only send a GET.
+    """
+    messages = _question(body)
+    events: SimpleQueue = SimpleQueue()
+
+    def work() -> None:
+        try:
+            answer = assistant.ask(engine.llm, _toolbox(), messages, events.put)
+            events.put({"type": "done", **answer})
+        except LLMError as error:
+            events.put({"type": "error", "status": _llm_failure(error).status_code, "detail": str(error)})
+        except Exception as error:  # noqa: BLE001 - the reader must hear that the answer stopped
+            events.put({"type": "error", "status": 500, "detail": f"the answer stopped: {error}"})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def send():
+        while (event := events.get()) is not None:
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    # no-transform and X-Accel-Buffering stop a proxy from holding the stream until it ends.
+    headers = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
+    return StreamingResponse(send(), media_type="text/event-stream", headers=headers)
 
 
 _cache: dict[str, tuple[float, object]] = {}

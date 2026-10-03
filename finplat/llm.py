@@ -80,32 +80,12 @@ class LLM:
         temperature: float = 0.2,
     ) -> dict:
         """The model's reply message: `content`, and `tool_calls` when it wants a tool."""
-        if not self.enabled:
-            raise LLMError("no LLM_API_KEY is set")
-        if self.budget:
-            self.budget.take()
-
-        body = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
-        if tools:
-            body["tools"] = tools
-        if tools and tool_choice:
-            body["tool_choice"] = tool_choice
+        body = self._body(messages, tools, tool_choice, max_tokens, temperature)
         if json_output:
             body["response_format"] = {"type": "json_object"}
-
-        request = urllib.request.Request(
-            f"{self.base_url.rstrip('/')}/chat/completions",
-            data=json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            with self._open(body) as response:
                 answer = json.loads(response.read())
-        except urllib.error.HTTPError as error:
-            # The provider's own message says what is wrong: a bad key, no balance, an unknown model.
-            detail = error.read().decode(errors="replace")[:300]
-            raise LLMError(f"{self.model} answered HTTP {error.code}: {detail}") from error
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             raise LLMError(f"{self.model} did not answer: {error}") from error
 
@@ -113,3 +93,79 @@ class LLM:
             return answer["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as error:
             raise LLMError(f"{self.model} answered without a message: {str(answer)[:300]}") from error
+
+    def stream(
+        self,
+        messages: list[dict],
+        *,
+        on_text: Callable[[str], None],
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+    ) -> dict:
+        """The same reply as `chat`, with each piece of text passed to `on_text` as it arrives.
+
+        Text and tool calls arrive in pieces. The text goes out at once. The tool calls are
+        assembled by their index, because the arguments of one call are split across many pieces.
+        """
+        body = self._body(messages, tools, tool_choice, max_tokens, temperature) | {"stream": True}
+        text, calls = [], {}
+        try:
+            with self._open(body) as response:
+                for raw in response:
+                    line = raw.decode(errors="replace").strip()
+                    # A blank line ends an event. A line that starts with a colon is a provider
+                    # comment, such as the OpenRouter keep-alive.
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    choices = json.loads(data).get("choices") or [{}]
+                    delta = choices[0].get("delta") or {}
+                    if delta.get("content"):
+                        text.append(delta["content"])
+                        on_text(delta["content"])
+                    for piece in delta.get("tool_calls") or []:
+                        call = calls.setdefault(
+                            piece.get("index", 0),
+                            {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                        )
+                        call["id"] = piece.get("id") or call["id"]
+                        function = piece.get("function") or {}
+                        call["function"]["name"] += function.get("name") or ""
+                        call["function"]["arguments"] += function.get("arguments") or ""
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+            raise LLMError(f"{self.model} stopped answering: {error}") from error
+
+        message = {"role": "assistant", "content": "".join(text) or None}
+        if calls:
+            message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        return message
+
+    def _body(self, messages, tools, tool_choice, max_tokens, temperature) -> dict:
+        if not self.enabled:
+            raise LLMError("no LLM_API_KEY is set")
+        if self.budget:
+            self.budget.take()
+        body = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        if tools:
+            body["tools"] = tools
+        if tools and tool_choice:
+            body["tool_choice"] = tool_choice
+        return body
+
+    def _open(self, body: dict):
+        request = urllib.request.Request(
+            f"{self.base_url.rstrip('/')}/chat/completions",
+            data=json.dumps(body).encode(),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            return urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS)
+        except urllib.error.HTTPError as error:
+            # The provider's own message says what is wrong: a bad key, no balance, an unknown model.
+            detail = error.read().decode(errors="replace")[:300]
+            raise LLMError(f"{self.model} answered HTTP {error.code}: {detail}") from error

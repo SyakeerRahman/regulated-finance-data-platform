@@ -141,3 +141,28 @@ def test_an_invented_decision_is_refused(client, store):  # noqa: F811
 
 def test_the_policy_lists_twelve_rules(client):
     assert len(client.get("/api/policy").json()["rules"]) == 12
+
+
+def test_a_streamed_answer_ends_with_done(client):
+    import json
+
+    use_llm(FakeLLM([{"content": "There are no alerts."}]))
+
+    answer = client.post("/api/ask/stream", json=question(("user", "Any alerts?")))
+    events = [json.loads(line[5:]) for line in answer.text.splitlines() if line.startswith("data:")]
+
+    assert answer.headers["content-type"].startswith("text/event-stream")
+    assert events[-1]["type"] == "done"
+    assert events[-1]["answer"] == "There are no alerts."
+
+
+def test_a_streamed_failure_is_an_error_event(client):
+    """The headers are sent before the model is asked, so a failure arrives as an event, not a status."""
+    budget = Budget(1)
+    budget.take()
+    use_llm(LLM("http://127.0.0.1:9", "m", "key", budget))
+
+    answer = client.post("/api/ask/stream", json=question(("user", "hi")))
+
+    assert '"type": "error"' in answer.text
+    assert '"status": 429' in answer.text

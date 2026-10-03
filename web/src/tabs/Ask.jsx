@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Panel, Pill } from "../components/Chrome.jsx";
 import { Icon } from "../components/Icons.jsx";
 import Markdown from "../components/Markdown.jsx";
-import { ask, getAi, getAiEvaluation, getPolicy } from "../api.js";
+import { askStream, getAi, getAiEvaluation, getPolicy } from "../api.js";
 
 const STARTERS = [
   "Which accounts had the most alerts this week?",
@@ -33,6 +33,12 @@ function Message({ message }) {
   }
   return (
     <div className="max-w-[95%] rounded-xl rounded-bl-sm border border-white/10 bg-white/[0.03] px-3 py-2">
+      {message.activity && !message.content && (
+        <p className="flex items-center gap-2 text-sm text-ink-muted">
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/20 border-t-series-1" aria-hidden="true" />
+          {message.activity}
+        </p>
+      )}
       {message.error ? <p className="text-sm text-serious">{message.content}</p> : <Markdown text={message.content} />}
       {message.tools?.length > 0 && (
         <p className="mt-2 text-[11px] text-ink-muted">
@@ -69,14 +75,24 @@ export default function Ask() {
     setMessages(next);
     setDraft("");
     setBusy(true);
+    // The answer is the last message, and every event changes only that one.
+    const update = (change) =>
+      setMessages((previous) => [...previous.slice(0, -1), { ...previous[previous.length - 1], ...change(previous[previous.length - 1]) }]);
+    setMessages((previous) => [...previous, { role: "assistant", content: "", tools: [], activity: "Thinkingï¿½" }]);
     try {
       // Only the words go back to the server. Errors and tool lists are for this screen.
       const history = next.filter((message) => !message.error).slice(-KEEP).map(({ role, content }) => ({ role, content }));
-      const answer = await ask(history);
-      setMessages((previous) => [...previous, { role: "assistant", content: answer.answer || "(no answer)", tools: answer.tools }]);
+      await askStream(history, (event) => {
+        if (event.type === "tool") update((last) => ({ activity: `${TOOL_NAMES[event.tool] ?? event.tool}ï¿½`, tools: [...last.tools, { tool: event.tool }] }));
+        // Text written before a tool call is a guess, and the server takes it back.
+        if (event.type === "discard") update(() => ({ content: "" }));
+        if (event.type === "delta") update((last) => ({ content: last.content + event.text }));
+        if (event.type === "done") update(() => ({ content: event.answer || "(no answer)", tools: event.tools, activity: null }));
+        if (event.type === "error") update(() => ({ content: `No answer: ${event.detail}`, error: true, activity: null }));
+      });
       getAi().then(setStatus).catch(() => {});
     } catch (failure) {
-      setMessages((previous) => [...previous, { role: "assistant", content: `No answer: ${failure.message}`, error: true }]);
+      update(() => ({ content: `No answer: ${failure.message}`, error: true, activity: null }));
     } finally {
       setBusy(false);
     }
@@ -122,12 +138,6 @@ export default function Ask() {
           {messages.map((message, index) => (
             <Message key={index} message={message} />
           ))}
-          {busy && (
-            <p className="flex items-center gap-2 text-sm text-ink-muted">
-              <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/20 border-t-series-1" aria-hidden="true" />
-              Reading the dataâ€¦
-            </p>
-          )}
           <div ref={bottom} />
         </div>
 
@@ -171,7 +181,7 @@ export default function Ask() {
             <dd className="tabular truncate text-ink">{status ? new URL(status.base_url).hostname : "â€¦"}</dd>
             <dt className="text-ink-muted">Calls today</dt>
             <dd className="tabular text-ink">
-              {status?.budget ? `${status.budget.used} of ${status.budget.per_day}` : "…"}
+              {status?.budget ? `${status.budget.used} of ${status.budget.per_day}` : "ï¿½"}
             </dd>
             <dt className="text-ink-muted">Agreement</dt>
             <dd className="text-ink">
@@ -217,7 +227,7 @@ export default function Ask() {
                 ))}
               </dl>
               <p className="text-[11px] text-ink-muted">
-                {evaluation.alerts} alerts · {evaluation.model} · prompt {evaluation.prompt_version}. The last row is why a person decides: trusting
+                {evaluation.alerts} alerts ï¿½ {evaluation.model} ï¿½ prompt {evaluation.prompt_version}. The last row is why a person decides: trusting
                 the AI alone would close that share of real fraud.
               </p>
             </div>

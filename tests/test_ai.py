@@ -31,6 +31,13 @@ class FakeLLM(LLM):
         self.options.append(options)
         return self.replies.pop(0)
 
+    def stream(self, messages, *, on_text, **options) -> dict:
+        """The same reply, its text sent one word at a time, as a provider sends it in pieces."""
+        reply = self.chat(messages, **options)
+        for word in (reply.get("content") or "").split():
+            on_text(word + " ")
+        return reply
+
 
 def tool_call(name: str, arguments: dict, call_id: str = "c1") -> dict:
     return {
@@ -388,3 +395,36 @@ def test_the_budget_starts_again_each_utc_day():
     clock["day"] = date(2026, 10, 4)
     assert budget.snapshot() == {"used": 0, "per_day": 1}
     budget.take()
+
+
+# --- streaming -----------------------------------------------------------------------------------
+
+
+def stream(llm: FakeLLM) -> tuple[dict, list[dict]]:
+    events: list[dict] = []
+    answer = assistant.run_agent(llm, Box(), "system", [{"role": "user", "content": "x"}], events.append)
+    return answer, events
+
+
+def test_a_streamed_answer_shows_each_tool_then_the_text():
+    llm = FakeLLM([tool_call("get_alert", {"alert_id": 8}), {"content": "Alert #8 is MYR 153.14."}])
+
+    answer, events = stream(llm)
+
+    assert events[0] == {"type": "tool", "tool": "get_alert"}
+    assert "".join(event["text"] for event in events if event["type"] == "delta").strip() == answer["answer"]
+    assert {"type": "discard"} not in events
+
+
+def test_text_streamed_before_a_tool_call_is_taken_back():
+    """The guess written beside a tool call was seen inventing numbers. A reader who saw it must see it go."""
+    guess = {**tool_call("get_alert", {"alert_id": 8}), "content": "The model is v3.2."}
+    llm = FakeLLM([guess, {"content": "Alert #8 is MYR 153.14."}])
+
+    answer, events = stream(llm)
+
+    kinds = [event["type"] for event in events]
+    assert kinds.index("discard") < kinds.index("tool")
+    after = events[kinds.index("discard") + 1 :]
+    assert "v3.2" not in "".join(event.get("text", "") for event in after)
+    assert answer["answer"] == "Alert #8 is MYR 153.14."

@@ -137,6 +137,37 @@ export const narrate = (id, refresh = false) =>
   json(`/api/alerts/${id}/narrative${refresh ? "?refresh=true" : ""}`, { method: "POST" });
 export const writeCaseNote = (id, refresh = false) =>
   json(`/api/alerts/${id}/case-note${refresh ? "?refresh=true" : ""}`, { method: "POST" });
+/**
+ * The answer as it is made. `onEvent` gets each server-sent event: tool, delta, discard, done or
+ * error. A POST, because the question is a body and EventSource can only send a GET.
+ */
+export const askStream = async (messages, onEvent) => {
+  const response = await fetch("/api/ask/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  if (!response.ok) {
+    const detail = await response.json().then((body) => body?.detail, () => null);
+    throw new Error(typeof detail === "string" ? detail : `the question answered ${response.status}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // An event ends at a blank line. The last piece may be half an event, so it waits for more.
+    const events = buffer.split("\n\n");
+    buffer = events.pop();
+    for (const event of events) {
+      const data = event.split("\n").find((line) => line.startsWith("data:"));
+      if (data) onEvent(JSON.parse(data.slice(5)));
+    }
+  }
+};
+
 export const ask = (messages) =>
   json("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages }) });
 
