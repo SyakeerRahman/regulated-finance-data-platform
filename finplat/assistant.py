@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from finplat import policy, prompts
+from finplat import cases, policy, prompts
 from finplat.alerts import CONFIDENCES, SUGGESTIONS, TOP_REASON, Store
 from finplat.domain import HOME_COUNTRY
+from finplat.embed import Embedder
 from finplat.llm import LLM, LLMError
 
 # A tool answer longer than this is cut. A model reading 200 rows answers no better than one
@@ -77,7 +78,7 @@ def rules_for(alert: dict) -> list[policy.Rule]:
 # --- explain one alert ---------------------------------------------------------------------------
 
 
-def narration_input(alert: dict, earlier: list[dict]) -> dict:
+def narration_input(alert: dict, earlier: list[dict], past_cases: list[dict] | None = None) -> dict:
     """Everything the model may use, and nothing else."""
     features = alert.get("features") or {}
     rule = rules_for(alert)[0]
@@ -90,21 +91,25 @@ def narration_input(alert: dict, earlier: list[dict]) -> dict:
         for row in earlier
         if row["alert_id"] != alert["alert_id"]
     ][:10]
-    return {
+    given = {
         "alert": compact(alert),
         "features": features,
         "policy_rule": rule.public(),
         "account": account,
     }
+    # None leaves the key out, so a narrative without retrieval sees the same input as before it.
+    if past_cases is not None:
+        given["similar_past_cases"] = past_cases
+    return given
 
 
-def narrate(llm: LLM, alert: dict, earlier: list[dict]) -> dict:
+def narrate(llm: LLM, alert: dict, earlier: list[dict], past_cases: list[dict] | None = None) -> dict:
     """Two sentences, a suggestion and a check, validated before anything stores them."""
     prompt = prompts.load("narrate")
     message = llm.chat(
         [
             {"role": "system", "content": prompt.text},
-            {"role": "user", "content": json.dumps(narration_input(alert, earlier), default=str)},
+            {"role": "user", "content": json.dumps(narration_input(alert, earlier, past_cases), default=str)},
         ],
         json_output=True,
         max_tokens=400,
@@ -201,6 +206,13 @@ TOOLS = [
         ("alert_id",),
     ),
     _tool(
+        "similar_cases",
+        "Earlier cases that read like this alert, found by meaning, nearest first. Each has its outcome as it was "
+        "known when this alert was raised: confirmed_fraud, false_positive, or pending, and who decided it.",
+        {"alert_id": {"type": "integer"}, "limit": {"type": "integer", "description": "At most 10"}},
+        ("alert_id",),
+    ),
+    _tool(
         "alert_stats",
         "Alert counts by status and by top reason, for the last N hours.",
         {"hours": {"type": "integer", "description": "Default 24"}},
@@ -227,6 +239,8 @@ class Toolbox:
     store: Store
     lake: str
     model_info: Callable[[], dict]
+    # The case search. None, or an embedder with no key, and the tool says it is off.
+    embedder: Embedder | None = None
 
     def run(self, name: str, arguments: dict) -> object:
         handler = getattr(self, f"tool_{name}", None)
@@ -308,6 +322,19 @@ class Toolbox:
             "similar": _plain(rows),
             "decided": {status: decided.count(status) for status in set(decided)},
             "note": "A smaller distance is more alike. Open alerts have no decision yet.",
+        }
+
+    def tool_similar_cases(self, alert_id, limit=5) -> dict:
+        if not (self.embedder and self.embedder.enabled):
+            return {"error": "the case search is off: no embedding key is set"}
+        alert = self.store.get(int(alert_id))
+        if alert is None:
+            return {"error": f"no alert {alert_id}"}
+        found = cases.past_cases(self.store, self.embedder, alert, max(1, min(int(limit or 5), 10)))
+        return {
+            "cases": found,
+            "note": "Pending means no verdict was known yet: it is not evidence either way. "
+            "simulated is a demo answer, not a real analyst.",
         }
 
     def tool_account_history(self, account_id, limit=15) -> dict:
@@ -495,10 +522,11 @@ def case_note(llm: LLM, toolbox: Toolbox, alert_id: int) -> dict:
         "alert": toolbox.run("get_alert", {"alert_id": alert_id}),
         "account": toolbox.run("account_history", {"account_id": toolbox.store.get(alert_id)["account_id"]}),
         "similar_alerts": toolbox.run("similar_alerts", {"alert_id": alert_id}),
+        "past_cases": toolbox.run("similar_cases", {"alert_id": alert_id}),
     }
     gathered = [
         {"tool": name, "arguments": {"alert_id": alert_id}}
-        for name in ("get_alert", "account_history", "similar_alerts")
+        for name in ("get_alert", "account_history", "similar_alerts", "similar_cases")
     ]
     request = (
         f"Write the case note for alert #{alert_id}. The evidence below is already read for you. "
@@ -508,4 +536,11 @@ def case_note(llm: LLM, toolbox: Toolbox, alert_id: int) -> dict:
     answer = run_agent(llm, toolbox, prompt.text, [{"role": "user", "content": request}])
     if not answer["answer"]:
         raise LLMError("the case note is empty")
-    return {**answer, "tools": gathered + answer["tools"], "prompt_version": prompt.version, "model": llm.model}
+    found = evidence["past_cases"].get("cases", []) if isinstance(evidence["past_cases"], dict) else []
+    return {
+        **answer,
+        "tools": gathered + answer["tools"],
+        "cases": cases.cited(answer["answer"], found),
+        "prompt_version": prompt.version,
+        "model": llm.model,
+    }

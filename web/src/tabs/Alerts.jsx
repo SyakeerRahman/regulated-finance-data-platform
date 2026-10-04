@@ -13,6 +13,7 @@ import {
   decide,
   decideMany,
   exportLabels,
+  getAlert,
   getAlertSummary,
   money,
   pretty,
@@ -122,6 +123,11 @@ export default function Alerts({ onOpenAccount }) {
     const row = await decide(id, status);
     setDetail((open) => (open && open.alert_id === id ? { ...open, ...row } : open));
     refreshAll();
+  };
+
+  // A cited past case may be on another page of the list, so it is fetched by id.
+  const onOpenAlert = (id) => {
+    getAlert(id).then(setDetail).catch(() => {});
   };
 
   const onBulk = async (status) => {
@@ -387,7 +393,7 @@ export default function Alerts({ onOpenAccount }) {
         </section>
 
         <div className="xl:col-span-4">
-          <AlertDetails alert={detail} onDecide={onDecide} onClose={() => setDetail(null)} onOpenAccount={onOpenAccount} />
+          <AlertDetails alert={detail} onDecide={onDecide} onClose={() => setDetail(null)} onOpenAccount={onOpenAccount} onOpenAlert={onOpenAlert} />
         </div>
       </div>
     </div>

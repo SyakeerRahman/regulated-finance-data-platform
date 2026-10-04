@@ -125,6 +125,8 @@ export const getTrace = (id) => json(`/api/lake/trace/${encodeURIComponent(id)}`
 export const getAi = () => json("/api/ai");
 export const getAiEvaluation = () => json("/api/ai/evaluation");
 export const getSimilar = (id) => json(`/api/alerts/${id}/similar?limit=5`);
+export const getAlert = (id) => json(`/api/alerts/${id}`);
+export const getCitedCases = (id) => json(`/api/alerts/${id}/cited-cases`);
 let policyRequest = null;
 /** The policy does not change while the page is open, so it is fetched once. */
 export const getPolicy = () => {

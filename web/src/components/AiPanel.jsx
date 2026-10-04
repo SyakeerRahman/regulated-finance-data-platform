@@ -2,7 +2,18 @@ import { useEffect, useState } from "react";
 import { Pill } from "./Chrome.jsx";
 import { Icon } from "./Icons.jsx";
 import Markdown from "./Markdown.jsx";
-import { ALERT_STATUS, SUGGESTION, getAi, getPolicy, getSimilar, money, narrate, pretty, writeCaseNote } from "../api.js";
+import {
+  ALERT_STATUS,
+  SUGGESTION,
+  getAi,
+  getCitedCases,
+  getPolicy,
+  getSimilar,
+  money,
+  narrate,
+  pretty,
+  writeCaseNote,
+} from "../api.js";
 
 let statusRequest = null;
 const aiStatus = () => {
@@ -66,7 +77,7 @@ function Waiting({ children }) {
 }
 
 /** Two sentences and a suggestion from the language model. Advice beside the decision, never in it. */
-export function AiNarrative({ alert }) {
+export function AiNarrative({ alert, onOpenAlert }) {
   const [enabled, setEnabled] = useState(null);
   const [answer, setAnswer] = useState(null);
   const [error, setError] = useState(null);
@@ -85,9 +96,15 @@ export function AiNarrative({ alert }) {
   // alert, so this keys on the id and not on the object.
   useEffect(() => {
     setAnswer(alert.ai_summary ? alert : null);
-    setNote(alert.case_note ? { text: alert.case_note, tools: [] } : null);
+    setNote(alert.case_note ? { text: alert.case_note, tools: [], cases: [] } : null);
     setError(null);
     setNoteError(null);
+    // A stored note keeps the ids it cited. Their rows come from the server, as known at this alert.
+    if (alert.case_note_cases?.length) {
+      getCitedCases(id)
+        .then((answer) => setNote((open) => (open ? { ...open, cases: answer.cases } : open)))
+        .catch(() => {});
+    }
   }, [id]);
 
   const run = async (refresh) => {
@@ -112,7 +129,7 @@ export function AiNarrative({ alert }) {
     setNoteError(null);
     try {
       const result = await writeCaseNote(id, refresh);
-      setNote({ text: result.alert.case_note, tools: result.tools });
+      setNote({ text: result.alert.case_note, tools: result.tools, cases: result.cases ?? [] });
     } catch (failure) {
       setNoteError(failure.message);
     } finally {
@@ -197,11 +214,49 @@ export function AiNarrative({ alert }) {
       {note && !noteBusy && (
         <div className="mt-3 rounded-md border border-white/10 bg-plane/60 p-3">
           <Markdown text={note.text} />
+          <CitedCases cases={note.cases} onOpenAlert={onOpenAlert} />
           {note.tools.length > 0 && (
             <p className="mt-2 text-[11px] text-ink-muted">Read with: {[...new Set(note.tools.map((call) => call.tool))].join(", ")}</p>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// What a past case's outcome looks like. Pending is not a verdict, so it gets no colour of one.
+const OUTCOME = { ...ALERT_STATUS, pending: { label: "Pending", tone: "muted" } };
+const SOURCE = { analyst: "analyst", label: "chargeback or dispute", simulated: "simulated, demo" };
+
+/** The past cases the note names by id, with their outcome as known when this alert was raised. */
+function CitedCases({ cases, onOpenAlert }) {
+  if (!cases?.length) return null;
+  return (
+    <div className="mt-3 border-t border-white/10 pt-2">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-ink-muted">Past cases cited</p>
+      <ul className="mt-1.5 space-y-1 text-xs">
+        {cases.map((row) => {
+          const outcome = OUTCOME[row.outcome] ?? OUTCOME.pending;
+          return (
+            <li key={row.alert_id} className="grid grid-cols-[3.5rem_5rem_minmax(0,1fr)_auto] items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onOpenAlert?.(row.alert_id)}
+                className="tabular text-left text-series-1 underline-offset-2 hover:underline"
+                title="Open this alert"
+              >
+                #{row.alert_id}
+              </button>
+              <span className="tabular text-right text-ink">{money(row.amount)}</span>
+              <span className="truncate text-ink-2">
+                {row.country} · {pretty(row.category)}
+                {row.outcome_source ? ` · ${SOURCE[row.outcome_source] ?? row.outcome_source}` : ""}
+              </span>
+              <Pill tone={outcome.tone}>{outcome.label}</Pill>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -234,7 +289,7 @@ export function SimilarAlerts({ alertId }) {
               <span className="tabular text-ink-muted">#{row.alert_id}</span>
               <span className="tabular text-right text-ink">{money(row.amount)}</span>
               <span className="truncate text-ink-2">
-                {row.country} � {pretty(row.category)} � {row.channel}
+                {row.country} · {pretty(row.category)} · {row.channel}
               </span>
               <Pill tone={status.tone}>{status.label}</Pill>
             </li>

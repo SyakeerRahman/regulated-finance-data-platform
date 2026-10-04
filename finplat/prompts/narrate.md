@@ -23,6 +23,11 @@ alerts are honest payments. Measured on 600 past alerts:
 Payments outside Malaysia, over MYR 300, or in a resellable category were fraud more often than
 the others in the same score band.
 
+The input may hold `similar_past_cases`: earlier alerts that read like this one, nearest first,
+each with its outcome as it was known when this alert was raised. A pending case has no verdict
+and is not evidence. When three or more decided cases agree, treat that as one more fact that
+points their way. It does not outweigh a score above 0.999 on its own.
+
 How to choose the suggestion:
 
 - Below 0.99, suggest likely_false_positive, unless two or more of those facts are present.

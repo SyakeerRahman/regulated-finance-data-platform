@@ -423,7 +423,18 @@ def _toolbox() -> assistant.Toolbox:
         versions = cached("versions", 30, lambda: model_report.version_rows(engine.tracking_uri))
         return {"live_version": engine.model_version, "threshold": engine.threshold, "versions": versions}
 
-    return assistant.Toolbox(engine.store, engine.lake, model_info)
+    return assistant.Toolbox(engine.store, engine.lake, model_info, engine.embedder)
+
+
+def _past_cases(alert: dict) -> list[dict] | None:
+    """Earlier cases for the narrative. None when the search is off or fails: the narrative must
+    never depend on it, so it is written without them as before."""
+    if not engine.embedder.enabled:
+        return None
+    try:
+        return cases.past_cases(engine.store, engine.embedder, alert)
+    except LLMError:
+        return None
 
 
 @app.get("/api/ai")
@@ -477,7 +488,9 @@ def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
         return alert
     _require_llm()
     try:
-        narrative = assistant.narrate(engine.llm, alert, engine.store.for_account(alert["account_id"]))
+        narrative = assistant.narrate(
+            engine.llm, alert, engine.store.for_account(alert["account_id"]), _past_cases(alert)
+        )
     except LLMError as error:
         raise _llm_failure(error) from error
     saved = engine.store.save_narrative(alert_id, narrative, engine.llm.model, prompts.load("narrate").version)
@@ -490,15 +503,25 @@ def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
     """The investigation agent reads the alert, the account and the policy, then writes a case note."""
     alert = _alert_or_404(alert_id)
     if alert["case_note"] and not refresh:
-        return {"alert": alert, "tools": []}
+        return {"alert": alert, "tools": [], "cases": _cited(alert)}
     _require_llm()
     try:
         note = assistant.case_note(engine.llm, _toolbox(), alert_id)
     except LLMError as error:
         raise _llm_failure(error) from error
-    saved = engine.store.save_case_note(alert_id, note["answer"], note["model"], note["prompt_version"])
+    saved = engine.store.save_case_note(alert_id, note["answer"], note["model"], note["prompt_version"], note["cases"])
     _reindex([alert_id])
-    return {"alert": _with_rules({**alert, **saved}), "tools": note["tools"]}
+    return {"alert": _with_rules({**alert, **saved}), "tools": note["tools"], "cases": _cited(saved)}
+
+
+def _cited(alert: dict) -> list[dict]:
+    """The past cases a stored note cites, with their outcomes as known when the alert was raised."""
+    return cases.by_ids(engine.store, alert.get("case_note_cases") or [], alert["created_at"])
+
+
+@app.get("/api/alerts/{alert_id}/cited-cases")
+def cited_cases(alert_id: int) -> dict:
+    return {"cases": _cited(_alert_or_404(alert_id))}
 
 
 class Message(BaseModel):
