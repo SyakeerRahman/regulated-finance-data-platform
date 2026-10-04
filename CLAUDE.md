@@ -19,6 +19,9 @@ The workspace rules are in `C:\Users\User\Project\CLAUDE.md`.
 | One day of the pipeline, no Airflow | `uv run python -m finplat.run 2026-09-01` |
 | The whole local stack: Airflow, API, MLflow, Postgres | `docker compose up -d --build`, then http://localhost:8097 (dashboard) and http://localhost:8095 (Airflow) |
 | Grade the AI analyst against the true answers | `docker compose exec api python -m finplat.ai_eval --alerts 100 --seed 23` |
+| Grade it without and with past cases | `docker compose exec api python -m finplat.ai_eval --compare --alerts 50 --seed 41` |
+| Index past cases for the case search | `docker compose exec api python -m finplat.cases index` |
+| Give pending cases a simulated outcome, for the demo | `docker compose exec api python -m finplat.cases simulate --count 200` |
 | Rebuild the Airflow image after a dependency change | `docker compose build` |
 
 `.env` with `LAKE_URI=data/lake` must exist before any command that touches the lake. The settings
@@ -94,13 +97,27 @@ stop one from appending to a table the other created.
 Stages A to E are done. Stage F (deploy) is in progress. The VPS is not rented yet and there is no
 domain, so work that needs neither comes first.
 
-Stage G (AI layer) is built on branch `stage-g-ai`, ahead of the VPS: policy citation, AI analyst
-on each alert, case-note agent, Ask AI tab, agreement metric. `finplat/assistant.py` holds it.
-Tests use a fake model, so the suite never calls a real one. The AI suggestion is graded
-against the true answers by `finplat/ai_eval.py`: change the narrate prompt, then grade it on a
-`--seed` it was not tuned on. Model calls are capped by `LLM_DAILY_CALLS`. Read
-`brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md` before changing who picks the
-rule or what the tools may do.
+Stage G (AI layer) is merged: policy citation, AI analyst on each alert, case-note agent, Ask AI
+tab, agreement metric. `finplat/assistant.py` holds it. Tests use a fake model, so the suite never
+calls a real one. The AI suggestion is graded against the true answers by `finplat/ai_eval.py`:
+change the narrate prompt, then grade it on a `--seed` it was not tuned on. Model calls are capped
+by `LLM_DAILY_CALLS`. Read `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md` before
+changing who picks the rule or what the tools may do.
+
+Epic SCRUM-30 (2026-10-04) added past cases and a review step. The plan is `docs/02-backlog.md`.
+- `finplat/embed.py`: embeddings over the same plain POST as the chat model. `EMBED_*` settings.
+- `finplat/cases.py`: the `case_vectors` table and the search. A past case shows only what was
+  known when the alert was raised. `test_a_search_shows_only_what_was_known_when_the_alert_was_raised`
+  is the guard. Simulated outcomes never go into `alerts.status`.
+- `finplat/case_flow.py`: the case note as a LangGraph workflow that waits for the analyst. The
+  Postgres checkpointer keeps each run. Each request builds its own graph and connection.
+- Postgres runs `pgvector/pgvector:pg18`. Never mount a volume made by `postgres:18-alpine` into
+  it: the two sort text differently. Move data with `pg_dump` and a restore. The old local volume
+  `finplat-pgdata` is kept as the way back until the owner deletes it.
+- Local defaults name 127.0.0.1, not localhost. The ports bind to 127.0.0.1 only, and on Windows
+  localhost tries `::1` first, which cost 8 s for each connection.
+- Run `ai_eval` inside the API container. On the Windows host, MLflow prints an emoji that the
+  console cannot encode, and the run crashes after it grades.
 
 Stage F so far: the repo is public on GitHub, CI runs the tests against a Postgres service, and each
 green push to `main` publishes both images to GHCR, tagged with the commit SHA.
