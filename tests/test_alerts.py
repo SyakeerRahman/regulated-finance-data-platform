@@ -59,7 +59,8 @@ def store(test_dsn) -> Store:
     store = Store(test_dsn)
     store.migrate()
     with store.connect() as connection:
-        connection.execute("truncate alerts restart identity")
+        # cascade: case_vectors refers to alerts, and Postgres refuses to truncate one without the other.
+        connection.execute("truncate alerts restart identity cascade")
     return store
 
 
