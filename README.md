@@ -433,7 +433,7 @@ The reasons are in `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.m
 | AI analyst | Two sentences, a suggestion (likely fraud, likely false positive or unsure) and one check | `finplat/assistant.py`, `narrate` |
 | Past cases | A search by meaning over earlier alerts, with each outcome as it was known then | `finplat/cases.py` |
 | Case note | An agent drafts a note from evidence that code reads. The analyst approves it or returns it | `finplat/case_flow.py` |
-| Ask AI | A chat with ten read-only tools over Postgres, the lake and MLflow | `finplat/assistant.py`, `ask` |
+| Ask AI | A chat with twelve read-only tools over Postgres, the lake and MLflow | `finplat/assistant.py`, `ask` |
 | Agreement | How often the suggestion matched the analyst decision | `Store.agreement` |
 
 Five rules hold the layer in place:

@@ -328,7 +328,7 @@ export default function Data() {
                 <thead>
                   <tr className="border-b border-white/10 text-left text-[11px] font-medium uppercase tracking-wide text-ink-muted">
                     {columns.map((column) => (
-                      <th key={column.name} className="sticky top-0 bg-surface px-3 py-2 font-medium" title={column.type}>
+                      <th key={column.name} className="sticky top-0 bg-surface px-3 py-2 font-medium" title={column.description ? `${column.description} (${column.type})` : column.type}>
                         {column.name}
                       </th>
                     ))}

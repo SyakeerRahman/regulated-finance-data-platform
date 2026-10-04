@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from finplat import cases, policy, prompts
+from finplat import cases, catalog, policy, prompts, quality
 from finplat.alerts import CONFIDENCES, SUGGESTIONS, TOP_REASON, Store
 from finplat.domain import HOME_COUNTRY
 from finplat.embed import Embedder
@@ -229,6 +229,19 @@ TOOLS = [
     ),
     _tool("model_info", "The live fraud model: version, threshold, and the precision and recall of each version.", {}),
     _tool("ai_agreement", "How often the AI suggestion matched the analyst's decision.", {}),
+    _tool(
+        "quality_history",
+        "The data quality checks of the last N daily batches, newest first, as the pipeline recorded them. "
+        "Each batch says whether a critical check failed, which stops the run before gold, and names each failed "
+        "check with its value, threshold and detail.",
+        {"days": {"type": "integer", "description": "Batches to show. Default 7, at most 30"}},
+    ),
+    _tool(
+        "describe_table",
+        "What a lake table holds and what each of its columns means: purpose, grain, writer, rerun rule and "
+        "retention. Give no name for the list of tables.",
+        {"name": {"type": "string", "description": "The table path, for example gold/transaction_features"}},
+    ),
 ]
 
 
@@ -425,6 +438,32 @@ class Toolbox:
 
     def tool_ai_agreement(self) -> dict:
         return self.store.agreement()
+
+    def tool_quality_history(self, days=7) -> dict:
+        # The stored results, not a new run of the checks: the answer is what the gate decided that day.
+        frame = quality.history(self.lake, days=max(1, min(int(days or 7), 30)))
+        batches = []
+        for batch_id, checks in sorted(frame.groupby("batch_id"), reverse=True):
+            failed = checks[~checks["passed"].astype(bool)]
+            batches.append(
+                {
+                    "batch_id": batch_id,
+                    "checked_at": str(checks["checked_at"].max()),
+                    "checks": len(checks),
+                    "stopped_the_run": bool((failed["severity"] == quality.CRITICAL).any()),
+                    "failed": _plain(failed[["check", "severity", "value", "threshold", "detail"]].to_dict("records")),
+                }
+            )
+        if not batches:
+            return {"error": "no quality results yet. The pipeline has not checked a batch"}
+        return {"batches": batches}
+
+    def tool_describe_table(self, name=None) -> dict:
+        if not name:
+            return {"tables": [{"table": table, "purpose": entry.purpose} for table, entry in catalog.CATALOG.items()]}
+        if name not in catalog.CATALOG:
+            return {"error": f"there is no table {name}. The tables are: {', '.join(catalog.CATALOG)}"}
+        return catalog.describe(name)
 
 
 # --- the agent loop ------------------------------------------------------------------------------
