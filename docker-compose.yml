@@ -30,6 +30,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+    # Named, so an MCP client can start `docker exec -i finplat-api python -m finplat.mcp_server`.
+    container_name: finplat-api
     restart: unless-stopped
     ports:
       - "127.0.0.1:8097:8000"
