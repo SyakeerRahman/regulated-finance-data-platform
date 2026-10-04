@@ -67,6 +67,8 @@ alter table alerts add column if not exists case_note_prompt_version text;
 alter table alerts add column if not exists case_note_at timestamptz;
 -- The past cases a case note cites by id, so the dashboard can link them.
 alter table alerts add column if not exists case_note_cases bigint[];
+-- The LangGraph run of the latest case note. Its draft waits in the checkpoint tables.
+alter table alerts add column if not exists case_note_thread text;
 
 -- Past cases as vectors. Written by finplat/cases.py. Removed with the alert.
 create table if not exists case_vectors (
@@ -200,6 +202,10 @@ class Store:
                 """,
                 {**narrative, "model": model, "version": prompt_version, "alert_id": alert_id},
             ).fetchone()
+
+    def set_case_note_thread(self, alert_id: int, thread: str) -> None:
+        with self.connect() as connection:
+            connection.execute("update alerts set case_note_thread = %s where alert_id = %s", (thread, alert_id))
 
     def save_case_note(
         self, alert_id: int, note: str, model: str, prompt_version: str, cases: list[int] | None = None

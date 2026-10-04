@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.main
+from finplat import case_flow
 from finplat.embed import Embedder
 from finplat.llm import LLM, Budget
 from tests.test_ai import SPIKE_ABROAD, FakeLLM
@@ -175,3 +176,31 @@ def test_a_streamed_failure_is_an_error_event(client):
 
     assert '"type": "error"' in answer.text
     assert '"status": 429' in answer.text
+
+
+def test_a_case_note_waits_for_the_analyst_and_is_saved_only_on_approval(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    use_llm(FakeLLM([{"content": "## Summary\nFirst draft."}, {"content": "## Summary\nSecond draft."}]))
+
+    first = client.post(f"/api/alerts/{alert_id}/case-note").json()
+    assert first["waiting"] and first["draft"] == "## Summary\nFirst draft."
+    assert first["alert"]["case_note"] is None
+    # Asked again, the waiting draft comes back. The fake has 1 reply left for the redraft only.
+    assert client.post(f"/api/alerts/{alert_id}/case-note").json()["draft"] == "## Summary\nFirst draft."
+
+    review = f"/api/alerts/{alert_id}/case-note/review"
+    assert client.post(review, json={"action": "return"}).status_code == 400
+    assert client.post(review, json={"action": "delete"}).status_code == 422
+    second = client.post(review, json={"action": "return", "comment": "Shorter."}).json()
+    assert second["draft"] == "## Summary\nSecond draft." and second["returns"] == 1
+
+    approved = client.post(review, json={"action": "approve"}).json()
+    assert approved["status"] == "approved" and not approved["waiting"]
+    assert approved["alert"]["case_note"] == "## Summary\nSecond draft."
+    assert client.post(review, json={"action": "approve"}).status_code == 409
+
+
+def test_a_review_with_no_draft_is_a_conflict(client, store):  # noqa: F811
+    alert_id = raise_alert(store)
+    assert client.post(f"/api/alerts/{alert_id}/case-note/review", json={"action": "approve"}).status_code == 409

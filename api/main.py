@@ -23,7 +23,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from finplat import ai_eval, assistant, cases, embed, lake_browser, model_report, ops, policy, prompts
+from finplat import ai_eval, assistant, case_flow, cases, embed, lake_browser, model_report, ops, policy, prompts
 from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
@@ -65,6 +65,7 @@ class Engine:
         self.explainer = Explainer(self.model, FEATURE_COLUMNS)
         self.store = Store(settings.postgres_dsn)
         self.store.migrate()
+        case_flow.setup(settings.postgres_dsn)
         # One budget for both: every request spends the same owner's credit.
         budget = Budget(settings.llm_daily_calls)
         self.llm = LLM(settings.llm_base_url, settings.llm_model, settings.llm_api_key, budget)
@@ -500,18 +501,68 @@ def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
 
 @app.post("/api/alerts/{alert_id}/case-note")
 def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
-    """The investigation agent reads the alert, the account and the policy, then writes a case note."""
+    """Start the case note workflow, or show where it stands.
+
+    The agent reads the evidence and drafts the note, and the run stops for the analyst. A second
+    request returns the waiting draft at no cost. `refresh` starts a new run.
+    """
     alert = _alert_or_404(alert_id)
-    if alert["case_note"] and not refresh:
-        return {"alert": alert, "tools": [], "cases": _cited(alert)}
+    if not refresh:
+        if alert["case_note_thread"]:
+            state = case_flow.view(engine.store.dsn, engine.llm, _toolbox(), engine.store, alert["case_note_thread"])
+            if state["waiting"]:
+                return _note_answer(alert, state)
+        if alert["case_note"]:
+            return {
+                "alert": alert,
+                "status": case_flow.APPROVED,
+                "waiting": False,
+                "draft": None,
+                "tools": [],
+                "cases": _cited(alert),
+            }
     _require_llm()
     try:
-        note = assistant.case_note(engine.llm, _toolbox(), alert_id)
+        state = case_flow.start(engine.store.dsn, engine.llm, _toolbox(), engine.store, alert_id)
     except LLMError as error:
         raise _llm_failure(error) from error
-    saved = engine.store.save_case_note(alert_id, note["answer"], note["model"], note["prompt_version"], note["cases"])
-    _reindex([alert_id])
-    return {"alert": _with_rules({**alert, **saved}), "tools": note["tools"], "cases": _cited(saved)}
+    return _note_answer(engine.store.get(alert_id), state)
+
+
+class Review(BaseModel):
+    action: str = Field(pattern="^(approve|return)$")
+    comment: str | None = Field(default=None, max_length=2_000)
+
+
+@app.post("/api/alerts/{alert_id}/case-note/review")
+def review_case_note(alert_id: int, body: Review) -> dict:
+    """The analyst approves the waiting draft, which saves it as the case note, or returns it with a
+    comment, which makes the agent draft it again. After 3 returns the analyst writes it by hand."""
+    alert = _alert_or_404(alert_id)
+    if not alert["case_note_thread"]:
+        raise HTTPException(409, f"alert {alert_id} has no case note draft")
+    if body.action == case_flow.RETURN:
+        _require_llm()
+    try:
+        state = case_flow.review(
+            engine.store.dsn, engine.llm, _toolbox(), engine.store, alert["case_note_thread"], body.action, body.comment
+        )
+    except ValueError as error:
+        raise HTTPException(409 if "no draft" in str(error) else 400, str(error)) from error
+    except LLMError as error:
+        raise _llm_failure(error) from error
+    if state["status"] == case_flow.APPROVED:
+        _reindex([alert_id])
+    return _note_answer(engine.store.get(alert_id), state)
+
+
+def _note_answer(alert: dict, state: dict) -> dict:
+    """Where the workflow stands, with the cited cases as rows, as known when the alert was raised."""
+    return {
+        **state,
+        "alert": _with_rules(alert),
+        "cases": cases.by_ids(engine.store, state["cases"], alert["created_at"]),
+    }
 
 
 def _cited(alert: dict) -> list[dict]:
