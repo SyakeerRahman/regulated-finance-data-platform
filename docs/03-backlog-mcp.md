@@ -65,7 +65,7 @@ Acceptance:
 - Resources: `finplat://catalog/{table}` and `finplat://policy/rules`.
 - Prompt: `investigate_alert(alert_id)`, a fixed investigation recipe.
 - No tool writes. There is no approve tool. The analyst approves on the dashboard.
-- Run it with `docker compose exec -T api python -m finplat.mcp_server`, so it uses the same
+- Run it with `docker exec -i finplat-api python -m finplat.mcp_server`, so it uses the same
   settings and network as the API.
 
 Acceptance:
@@ -106,3 +106,10 @@ Approved by the owner on 2026-10-04. All 3 recommendations above are accepted:
 1. Library: the official `mcp` package.
 2. Catalog scope: the lake tables only. The Postgres tables wait for a later story.
 3. Where it runs: local only in this epic.
+
+## Change to story 3, during SCRUM-41
+
+Found on 2026-10-04. An MCP client starts the server with only a few environment variables, and
+without the rest the Docker CLI cannot find its compose plugin: `docker compose exec` failed with
+"unknown shorthand flag: 'T'". The command is now `docker exec -i finplat-api ...`, and the API
+container has the fixed name `finplat-api`, as Postgres has `finplat-postgres`.
