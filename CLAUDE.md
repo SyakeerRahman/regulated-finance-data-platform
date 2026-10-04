@@ -23,6 +23,7 @@ The workspace rules are in `C:\Users\User\Project\CLAUDE.md`.
 | Index past cases for the case search | `docker compose exec api python -m finplat.cases index` |
 | Give pending cases a simulated outcome, for the demo | `docker compose exec api python -m finplat.cases simulate --count 200` |
 | Rebuild the Airflow image after a dependency change | `docker compose build` |
+| Start the MCP server, as an MCP client does | `docker exec -i finplat-api python -m finplat.mcp_server` |
 
 `.env` with `LAKE_URI=data/lake` must exist before any command that touches the lake. The settings
 class has no default for it, so a missing value stops startup.
@@ -118,6 +119,17 @@ Epic SCRUM-30 (2026-10-04) added past cases and a review step. The plan is `docs
   localhost tries `::1` first, which cost 8 s for each connection.
 - Run `ai_eval` inside the API container. On the Windows host, MLflow prints an emoji that the
   console cannot encode, and the run crashes after it grades.
+
+Epic SCRUM-38 (2026-10-04) added a data catalog and an MCP server. The plan is `docs/03-backlog-mcp.md`.
+- `finplat/catalog.py`: what each lake table and column means. `tests/test_catalog.py` compares it
+  with the real Delta schemas in both directions. A new column needs a catalog entry, or CI fails.
+- `quality_history` and `describe_table` are Toolbox tools, so Ask AI has twelve.
+- `finplat/mcp_server.py` serves `assistant.TOOLS` through `Toolbox.run` over stdio. Add a tool to
+  the Toolbox and both clients get it. Never add a write tool: the decision stays with a person.
+- An MCP client starts the server with few environment variables, so `docker compose exec` cannot
+  find its plugin. Use `docker exec -i finplat-api`. Keep the `container_name` of the API.
+- The API image copies `finplat` in and has no mount. A code change needs
+  `docker compose up -d --build api` before the API or the MCP server sees it.
 
 Stage F so far: the repo is public on GitHub, CI runs the tests against a Postgres service, and each
 green push to `main` publishes both images to GHCR, tagged with the commit SHA.
