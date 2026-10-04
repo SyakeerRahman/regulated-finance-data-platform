@@ -523,8 +523,15 @@ starts the server inside the API container, so the server reads the same Postgre
 | Resources | `finplat://policy/rules`, and `finplat://catalog/<table>` for each lake table |
 | Prompt | `investigate_alert(alert_id)`: five steps that end without a decision |
 
-To connect Claude Desktop, start the local stack, then add this to
-`%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Desktop:
+To connect Claude Desktop, start the local stack, then add this to its config file and restart
+Claude Desktop. Quit it from the tray icon, then open it again.
+
+| Claude Desktop install | Config file |
+|---|---|
+| Installer from claude.ai | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Microsoft Store | `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\claude_desktop_config.json` |
+
+The file can already hold other settings. Add `mcpServers` beside them:
 
 ```json
 {
