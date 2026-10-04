@@ -204,3 +204,52 @@ def test_a_case_note_waits_for_the_analyst_and_is_saved_only_on_approval(client,
 def test_a_review_with_no_draft_is_a_conflict(client, store):  # noqa: F811
     alert_id = raise_alert(store)
     assert client.post(f"/api/alerts/{alert_id}/case-note/review", json={"action": "approve"}).status_code == 409
+
+
+def test_opening_an_alert_never_starts_a_run(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    # The fake has no reply. A model call would fail the request.
+    use_llm(FakeLLM([]))
+
+    assert client.get(f"/api/alerts/{alert_id}/case-note").json()["status"] == "none"
+
+
+def test_the_approver_is_the_login_cloudflare_access_sends(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    use_llm(FakeLLM([{"content": "## Summary\nDraft."}]))
+    client.post(f"/api/alerts/{alert_id}/case-note")
+
+    client.post(
+        f"/api/alerts/{alert_id}/case-note/review",
+        json={"action": "approve"},
+        headers={"Cf-Access-Authenticated-User-Email": "analyst@example.com"},
+    )
+
+    state = client.get(f"/api/alerts/{alert_id}/case-note").json()
+    assert state["status"] == "approved"
+    assert state["alert"]["case_note_by"] == "analyst@example.com"
+    assert state["alert"]["case_note_at"]
+
+
+def test_after_three_returns_the_analyst_writes_the_note(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    use_llm(FakeLLM([{"content": f"## Summary\nDraft {number}."} for number in range(1, 5)]))
+    client.post(f"/api/alerts/{alert_id}/case-note")
+    review = f"/api/alerts/{alert_id}/case-note/review"
+    for _ in range(4):
+        last = client.post(review, json={"action": "return", "comment": "No."}).json()
+
+    assert last["status"] == "manual"
+    # The manual state stays until the analyst writes the note, and shows the last draft to start from.
+    waiting = client.get(f"/api/alerts/{alert_id}/case-note").json()
+    assert waiting["status"] == "manual" and waiting["draft"] == "## Summary\nDraft 4."
+
+    assert client.post(f"/api/alerts/{alert_id}/case-note/manual", json={"text": "  "}).status_code == 400
+    saved = client.post(f"/api/alerts/{alert_id}/case-note/manual", json={"text": "Written by hand."}).json()
+    assert saved["status"] == "approved"
+    assert saved["alert"]["case_note"] == "Written by hand."
+    assert saved["alert"]["case_note_model"] is None
+    assert client.get(f"/api/alerts/{alert_id}/case-note").json()["status"] == "approved"

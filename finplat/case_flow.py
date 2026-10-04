@@ -45,6 +45,7 @@ class CaseState(TypedDict, total=False):
     comment: str | None
     returns: int
     status: str
+    approved_by: str | None
 
 
 def _json_safe(value: dict) -> dict:
@@ -84,7 +85,7 @@ def build(llm: LLM, toolbox: assistant.Toolbox, store: Store, checkpointer):
         # A resumed run starts this node again from the top, so nothing may happen before interrupt().
         decision = interrupt({"draft": state["draft"], "cases": state["cases"], "returns": state["returns"]})
         if decision["action"] == APPROVE:
-            return {"status": APPROVED, "comment": None}
+            return {"status": APPROVED, "comment": None, "approved_by": decision.get("by")}
         returns = state["returns"] + 1
         return {
             "status": MANUAL if returns > MAX_RETURNS else DRAFT,
@@ -96,7 +97,14 @@ def build(llm: LLM, toolbox: assistant.Toolbox, store: Store, checkpointer):
         return {APPROVED: "save_note", MANUAL: END}.get(state["status"], "draft_note")
 
     def save_note(state: CaseState) -> dict:
-        store.save_case_note(state["alert_id"], state["draft"], state["model"], state["prompt_version"], state["cases"])
+        store.save_case_note(
+            state["alert_id"],
+            state["draft"],
+            state["model"],
+            state["prompt_version"],
+            state["cases"],
+            state.get("approved_by"),
+        )
         return {}
 
     graph = StateGraph(CaseState)
@@ -162,10 +170,17 @@ def view(dsn: str, llm: LLM, toolbox: assistant.Toolbox, store: Store, thread: s
 
 
 def review(
-    dsn: str, llm: LLM, toolbox: assistant.Toolbox, store: Store, thread: str, action: str, comment: str | None
+    dsn: str,
+    llm: LLM,
+    toolbox: assistant.Toolbox,
+    store: Store,
+    thread: str,
+    action: str,
+    comment: str | None,
+    by: str | None = None,
 ) -> dict:
     """The analyst's answer to the waiting draft. Checked before the run resumes, so a bad answer
-    leaves the draft waiting as it was."""
+    leaves the draft waiting as it was. `by` names the analyst, when a login is known."""
     from langgraph.types import Command
 
     if action not in ACTIONS:
@@ -175,5 +190,6 @@ def review(
     with _graph(dsn, llm, toolbox, store) as graph:
         if not _view(graph, thread)["waiting"]:
             raise ValueError("no draft is waiting for review in this run")
-        graph.invoke(Command(resume={"action": action, "comment": (comment or "").strip() or None}), _config(thread))
+        answer = {"action": action, "comment": (comment or "").strip() or None, "by": by}
+        graph.invoke(Command(resume=answer), _config(thread))
         return _view(graph, thread)

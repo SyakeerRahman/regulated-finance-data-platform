@@ -127,6 +127,20 @@ export const getAiEvaluation = () => json("/api/ai/evaluation");
 export const getSimilar = (id) => json(`/api/alerts/${id}/similar?limit=5`);
 export const getAlert = (id) => json(`/api/alerts/${id}`);
 export const getCitedCases = (id) => json(`/api/alerts/${id}/cited-cases`);
+// The case note workflow. GET only reads. POST starts a draft, which costs model calls.
+export const getCaseNote = (id) => json(`/api/alerts/${id}/case-note`);
+export const reviewCaseNote = (id, action, comment) =>
+  json(`/api/alerts/${id}/case-note/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, comment }),
+  });
+export const saveManualNote = (id, text) =>
+  json(`/api/alerts/${id}/case-note/manual`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
 let policyRequest = null;
 /** The policy does not change while the page is open, so it is fetched once. */
 export const getPolicy = () => {

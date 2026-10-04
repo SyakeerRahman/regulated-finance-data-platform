@@ -18,7 +18,7 @@ from queue import SimpleQueue
 
 import pandas as pd
 from deltalake import DeltaTable
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -499,6 +499,40 @@ def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
     return _with_rules({**alert, **saved})
 
 
+NO_NOTE = "none"
+
+
+def _note_state(alert: dict) -> dict:
+    """Where the case note stands: none, a draft waiting, manual after 3 returns, or approved."""
+    thread = alert["case_note_thread"]
+    if thread:
+        state = case_flow.view(engine.store.dsn, engine.llm, _toolbox(), engine.store, thread)
+        if state["waiting"] or state["status"] == case_flow.MANUAL:
+            return _note_answer(alert, state)
+    if alert["case_note"]:
+        return {
+            "alert": _with_rules(alert),
+            "status": case_flow.APPROVED,
+            "waiting": False,
+            "draft": None,
+            "tools": [],
+            "cases": _cited(alert),
+        }
+    return {"alert": _with_rules(alert), "status": NO_NOTE, "waiting": False, "draft": None, "tools": [], "cases": []}
+
+
+@app.get("/api/alerts/{alert_id}/case-note")
+def case_note_state(alert_id: int) -> dict:
+    """Read only. Opening an alert must never start a paid run."""
+    return _note_state(_alert_or_404(alert_id))
+
+
+def _analyst(request: Request) -> str | None:
+    """The analyst's login, which Cloudflare Access adds to every request it lets through. Absent on
+    this PC. The API listens on 127.0.0.1 only, so only the tunnel can set it."""
+    return request.headers.get("Cf-Access-Authenticated-User-Email")
+
+
 @app.post("/api/alerts/{alert_id}/case-note")
 def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
     """Start the case note workflow, or show where it stands.
@@ -508,19 +542,9 @@ def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
     """
     alert = _alert_or_404(alert_id)
     if not refresh:
-        if alert["case_note_thread"]:
-            state = case_flow.view(engine.store.dsn, engine.llm, _toolbox(), engine.store, alert["case_note_thread"])
-            if state["waiting"]:
-                return _note_answer(alert, state)
-        if alert["case_note"]:
-            return {
-                "alert": alert,
-                "status": case_flow.APPROVED,
-                "waiting": False,
-                "draft": None,
-                "tools": [],
-                "cases": _cited(alert),
-            }
+        state = _note_state(alert)
+        if state["status"] != NO_NOTE:
+            return state
     _require_llm()
     try:
         state = case_flow.start(engine.store.dsn, engine.llm, _toolbox(), engine.store, alert_id)
@@ -535,7 +559,7 @@ class Review(BaseModel):
 
 
 @app.post("/api/alerts/{alert_id}/case-note/review")
-def review_case_note(alert_id: int, body: Review) -> dict:
+def review_case_note(alert_id: int, body: Review, request: Request) -> dict:
     """The analyst approves the waiting draft, which saves it as the case note, or returns it with a
     comment, which makes the agent draft it again. After 3 returns the analyst writes it by hand."""
     alert = _alert_or_404(alert_id)
@@ -545,7 +569,14 @@ def review_case_note(alert_id: int, body: Review) -> dict:
         _require_llm()
     try:
         state = case_flow.review(
-            engine.store.dsn, engine.llm, _toolbox(), engine.store, alert["case_note_thread"], body.action, body.comment
+            engine.store.dsn,
+            engine.llm,
+            _toolbox(),
+            engine.store,
+            alert["case_note_thread"],
+            body.action,
+            body.comment,
+            _analyst(request),
         )
     except ValueError as error:
         raise HTTPException(409 if "no draft" in str(error) else 400, str(error)) from error
@@ -553,7 +584,25 @@ def review_case_note(alert_id: int, body: Review) -> dict:
         raise _llm_failure(error) from error
     if state["status"] == case_flow.APPROVED:
         _reindex([alert_id])
+        return _note_state(engine.store.get(alert_id))
     return _note_answer(engine.store.get(alert_id), state)
+
+
+class ManualNote(BaseModel):
+    text: str = Field(min_length=1, max_length=5_000)
+
+
+@app.post("/api/alerts/{alert_id}/case-note/manual")
+def manual_case_note(alert_id: int, body: ManualNote, request: Request) -> dict:
+    """The note the analyst writes by hand, after the agent's drafts were returned 3 times. It ends
+    the run, so the next look shows this note and not the last draft."""
+    _alert_or_404(alert_id)
+    if not body.text.strip():
+        raise HTTPException(400, "the note is empty")
+    engine.store.save_case_note(alert_id, body.text.strip(), None, None, [], _analyst(request))
+    engine.store.set_case_note_thread(alert_id, None)
+    _reindex([alert_id])
+    return _note_state(engine.store.get(alert_id))
 
 
 def _note_answer(alert: dict, state: dict) -> dict:

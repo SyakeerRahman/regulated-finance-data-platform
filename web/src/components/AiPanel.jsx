@@ -6,12 +6,14 @@ import {
   ALERT_STATUS,
   SUGGESTION,
   getAi,
-  getCitedCases,
+  getCaseNote,
   getPolicy,
   getSimilar,
   money,
   narrate,
   pretty,
+  reviewCaseNote,
+  saveManualNote,
   writeCaseNote,
 } from "../api.js";
 
@@ -82,9 +84,6 @@ export function AiNarrative({ alert, onOpenAlert }) {
   const [answer, setAnswer] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState(null);
-  const [noteBusy, setNoteBusy] = useState(false);
-  const [noteError, setNoteError] = useState(null);
 
   const id = alert.alert_id;
 
@@ -96,15 +95,7 @@ export function AiNarrative({ alert, onOpenAlert }) {
   // alert, so this keys on the id and not on the object.
   useEffect(() => {
     setAnswer(alert.ai_summary ? alert : null);
-    setNote(alert.case_note ? { text: alert.case_note, tools: [], cases: [] } : null);
     setError(null);
-    setNoteError(null);
-    // A stored note keeps the ids it cited. Their rows come from the server, as known at this alert.
-    if (alert.case_note_cases?.length) {
-      getCitedCases(id)
-        .then((answer) => setNote((open) => (open ? { ...open, cases: answer.cases } : open)))
-        .catch(() => {});
-    }
   }, [id]);
 
   const run = async (refresh) => {
@@ -123,19 +114,6 @@ export function AiNarrative({ alert, onOpenAlert }) {
   useEffect(() => {
     if (enabled && !alert.ai_summary) run(false);
   }, [id, enabled]);
-
-  const investigate = async (refresh) => {
-    setNoteBusy(true);
-    setNoteError(null);
-    try {
-      const result = await writeCaseNote(id, refresh);
-      setNote({ text: result.alert.case_note, tools: result.tools, cases: result.cases ?? [] });
-    } catch (failure) {
-      setNoteError(failure.message);
-    } finally {
-      setNoteBusy(false);
-    }
-  };
 
   const suggestion = answer && SUGGESTION[answer.ai_suggestion];
 
@@ -182,42 +160,187 @@ export function AiNarrative({ alert, onOpenAlert }) {
         )}
       </div>
 
-      {enabled && (
+      {enabled && answer && (
         <div className="mt-3 flex flex-wrap gap-2 border-t border-white/10 pt-3">
           <button
             type="button"
-            onClick={() => investigate(Boolean(note))}
-            disabled={noteBusy}
-            className="rounded-md border border-series-1/50 px-2.5 py-1 text-xs font-medium text-series-1 hover:bg-series-1/10 disabled:opacity-40"
+            onClick={() => run(true)}
+            disabled={busy}
+            className="rounded-md border border-white/15 px-2.5 py-1 text-xs text-ink-2 hover:border-white/35 disabled:opacity-40"
           >
-            {note ? "Rewrite case note" : "Write case note"}
+            Ask again
           </button>
-          {answer && (
+        </div>
+      )}
+
+      {enabled && <CaseNote alertId={id} onOpenAlert={onOpenAlert} />}
+    </div>
+  );
+}
+
+const when = (iso) =>
+  new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+const BUTTON = "rounded-md border px-2.5 py-1 text-xs font-medium disabled:opacity-40";
+
+/**
+ * The case note workflow. The agent drafts, the run waits, and the analyst approves the draft or
+ * returns it with a comment. A draft is not a case note until it is approved. After 3 returns the
+ * analyst writes the note by hand, starting from the last draft.
+ */
+function CaseNote({ alertId, onOpenAlert }) {
+  const [state, setState] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const [comment, setComment] = useState("");
+  const [returning, setReturning] = useState(false);
+  const [manual, setManual] = useState("");
+
+  // Read only. Opening an alert never starts a paid run.
+  useEffect(() => {
+    setState(null);
+    setError(null);
+    setComment("");
+    setReturning(false);
+    getCaseNote(alertId)
+      .then((answer) => {
+        setState(answer);
+        setManual(answer.draft ?? "");
+      })
+      .catch((failure) => setError(failure.message));
+  }, [alertId]);
+
+  const act = async (label, request) => {
+    setBusy(label);
+    setError(null);
+    try {
+      const answer = await request();
+      setState(answer);
+      setManual(answer.draft ?? "");
+      setComment("");
+      setReturning(false);
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const start = (refresh) => act("drafting", () => writeCaseNote(alertId, refresh));
+  const approve = () => act("saving", () => reviewCaseNote(alertId, "approve", null));
+  const sendBack = () => act("drafting", () => reviewCaseNote(alertId, "return", comment.trim()));
+  const saveByHand = () => act("saving", () => saveManualNote(alertId, manual.trim()));
+
+  const status = state?.status;
+  const note = state?.alert;
+  const badge = { draft: ["warning", "Draft · not saved"], approved: ["good", "Approved"], manual: ["serious", "Write by hand"] }[status];
+
+  return (
+    <div className="mt-3 border-t border-white/10 pt-3">
+      <div className="flex items-center gap-2 text-sm font-medium text-ink">
+        Case note
+        {badge && (
+          <span className="ml-auto">
+            <Pill tone={badge[0]}>{badge[1]}</Pill>
+          </span>
+        )}
+      </div>
+
+      {busy && (
+        <div className="mt-2">
+          <Waiting>{busy === "saving" ? "Saving the note…" : "The agent is reading the evidence and writing a draft…"}</Waiting>
+        </div>
+      )}
+      {error && <p className="mt-2 text-sm text-serious">The case note failed: {error}</p>}
+
+      {!busy && status === "none" && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => start(false)} className={`${BUTTON} border-series-1/50 text-series-1 hover:bg-series-1/10`}>
+            Write case note
+          </button>
+          <span className="text-xs text-ink-muted">The agent drafts it. Nothing is saved until you approve.</span>
+        </div>
+      )}
+
+      {!busy && status === "draft" && (
+        <div className="mt-2 rounded-md border border-dashed border-warning/40 bg-plane/60 p-3">
+          <Markdown text={state.draft} />
+          <CitedCases cases={state.cases} onOpenAlert={onOpenAlert} />
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/10 pt-3">
+            <button type="button" onClick={approve} className={`${BUTTON} border-good/50 text-good hover:bg-good/10`}>
+              Approve
+            </button>
             <button
               type="button"
-              onClick={() => run(true)}
-              disabled={busy}
-              className="rounded-md border border-white/15 px-2.5 py-1 text-xs text-ink-2 hover:border-white/35 disabled:opacity-40"
+              onClick={() => setReturning((open) => !open)}
+              aria-expanded={returning}
+              className={`${BUTTON} border-white/20 text-ink hover:border-white/40`}
             >
-              Ask again
+              Return with comment
             </button>
+            <span className="text-xs text-ink-muted">
+              {state.returns_left} {state.returns_left === 1 ? "return" : "returns"} left
+            </span>
+          </div>
+          {returning && (
+            <div className="mt-2 space-y-2">
+              <label htmlFor={`return-${alertId}`} className="block text-xs text-ink-2">
+                What should the agent change?
+              </label>
+              <textarea
+                id={`return-${alertId}`}
+                value={comment}
+                onChange={(event) => setComment(event.target.value)}
+                rows={2}
+                maxLength={2000}
+                placeholder="For example: name the payment hour, and leave out the open alerts."
+                className="w-full rounded-md border border-white/15 bg-plane px-2 py-1.5 text-sm text-ink placeholder:text-ink-muted"
+              />
+              <button
+                type="button"
+                onClick={sendBack}
+                disabled={!comment.trim()}
+                className={`${BUTTON} border-white/20 text-ink hover:border-white/40`}
+              >
+                Send back for a new draft
+              </button>
+            </div>
           )}
         </div>
       )}
 
-      {noteBusy && (
-        <div className="mt-3">
-          <Waiting>The agent is reading the alert, the account history and the policy…</Waiting>
+      {!busy && status === "manual" && (
+        <div className="mt-2 space-y-2 rounded-md border border-serious/40 bg-plane/60 p-3">
+          <p className="text-sm text-ink-2">The draft was returned 3 times. Write the note yourself. The last draft is below to start from.</p>
+          <label htmlFor={`manual-${alertId}`} className="sr-only">
+            Case note
+          </label>
+          <textarea
+            id={`manual-${alertId}`}
+            value={manual}
+            onChange={(event) => setManual(event.target.value)}
+            rows={10}
+            maxLength={5000}
+            className="w-full rounded-md border border-white/15 bg-plane px-2 py-1.5 font-mono text-xs text-ink"
+          />
+          <button type="button" onClick={saveByHand} disabled={!manual.trim()} className={`${BUTTON} border-good/50 text-good hover:bg-good/10`}>
+            Save note
+          </button>
         </div>
       )}
-      {noteError && <p className="mt-3 text-sm text-serious">The case note failed: {noteError}</p>}
-      {note && !noteBusy && (
-        <div className="mt-3 rounded-md border border-white/10 bg-plane/60 p-3">
-          <Markdown text={note.text} />
-          <CitedCases cases={note.cases} onOpenAlert={onOpenAlert} />
-          {note.tools.length > 0 && (
-            <p className="mt-2 text-[11px] text-ink-muted">Read with: {[...new Set(note.tools.map((call) => call.tool))].join(", ")}</p>
-          )}
+
+      {!busy && status === "approved" && note && (
+        <div className="mt-2 rounded-md border border-white/10 bg-plane/60 p-3">
+          <Markdown text={note.case_note} />
+          <CitedCases cases={state.cases} onOpenAlert={onOpenAlert} />
+          <p className="mt-2 text-[11px] text-ink-muted">
+            {note.case_note_model ? "Drafted by the agent and approved" : "Written by hand"}
+            {note.case_note_by ? ` by ${note.case_note_by}` : " (no login yet, so no name)"}
+            {note.case_note_at ? `, ${when(note.case_note_at)}` : ""}.
+          </p>
+          <button type="button" onClick={() => start(true)} className={`mt-2 ${BUTTON} border-series-1/50 text-series-1 hover:bg-series-1/10`}>
+            Draft a new note
+          </button>
         </div>
       )}
     </div>
