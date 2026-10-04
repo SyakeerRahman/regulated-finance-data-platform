@@ -174,8 +174,11 @@ The corpus is now every alert with an AI summary. Each case has an outcome and i
 
 - `analyst`: the analyst decision, known at `decided_at`.
 - `label`: the label from `silver/labels`, known at `labelled_at`.
-- `simulated`: the true answer, written by a demo command and known at the time it ran. It lives
-  only in `case_vectors`, never in `alerts.status`, so it can never become a training label.
+- `simulated`: the true answer, written by a demo command. It lives only in `case_vectors`, never
+  in `alerts.status`, so it can never become a training label. Known 1 hour after its alert, as if
+  a team decided each case within the hour. Changed by the owner on 2026-10-04 during SCRUM-34:
+  known "when the command ran" hid every simulated outcome from every older alert, so the grading
+  of retrieval on older alerts measured nothing.
 - No outcome yet: the case is returned as pending.
 
 The leak rule now applies to the outcome: a search for an alert shows an outcome only when it

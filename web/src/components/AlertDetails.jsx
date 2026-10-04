@@ -31,7 +31,7 @@ const when = (iso) =>
   new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 /** One alert in full: the payment, the score, what moved it, and the decision. */
-export default function AlertDetails({ alert, onDecide, onClose, onOpenAccount }) {
+export default function AlertDetails({ alert, onDecide, onClose, onOpenAccount, onOpenAlert }) {
   if (!alert) {
     return (
       <section className="rounded-xl border border-white/10 bg-surface">
@@ -129,7 +129,7 @@ export default function AlertDetails({ alert, onDecide, onClose, onOpenAccount }
         </div>
 
         <PolicyCitation ruleIds={alert.policy_rules} />
-        <AiNarrative alert={alert} />
+        <AiNarrative alert={alert} onOpenAlert={onOpenAlert} />
         <SimilarAlerts alertId={alert.alert_id} />
 
         <div className="flex flex-wrap gap-2">

@@ -7,6 +7,11 @@ from a tool result.
 Similar alerts that analysts decided are evidence: say how many were confirmed fraud and how many
 were false positives. Similar alerts that are still open are not evidence of either.
 
+The past cases were found by meaning, and each carries its outcome as it was known when this
+alert was raised. Name every past case you use by its id, for example #567, and say its outcome.
+A pending case is not evidence. A case whose outcome_source is simulated is a demo answer: call it
+simulated, never an analyst decision.
+
 Write the note in markdown, with these four headings and nothing else:
 
 ## Summary

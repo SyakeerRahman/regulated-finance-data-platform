@@ -171,8 +171,9 @@ def test_a_simulated_outcome_never_becomes_a_label(store, lake, tmp_path, monkey
     cases.index(store, FakeEmbedder(), lake)
     monkeypatch.setattr(ai_eval, "truth_for", lambda alerts, seed, accounts: {"t-1": True})
 
-    assert cases.simulate(store, seed=7, accounts=100, count=10, now=T0) == 1
-    assert row(store, alert_id) == (CONFIRMED, cases.SIMULATED, T0)
+    assert cases.simulate(store, seed=7, accounts=100, count=10) == 1
+    # As if a team decided it within the hour, so a later alert can learn from it.
+    assert row(store, alert_id) == (CONFIRMED, cases.SIMULATED, T0 + cases.DECIDED_AFTER)
     assert store.get(alert_id)["status"] == OPEN
     assert export_decisions(store, str(tmp_path / "labels-lake")) == 0
 
@@ -193,3 +194,45 @@ def test_the_case_text_holds_the_payment_the_rule_and_the_note(store, lake):  # 
     assert "Policy: FP-9 " in text
     assert "Summary: A electronics payment abroad." in text
     assert "Case note: Two countries in an hour." in text
+
+
+def test_past_cases_for_an_indexed_alert_cost_no_call(store, lake):  # noqa: F811
+    earlier = summarised(store, "t-1", "electronics", T0 - timedelta(days=1))
+    target = summarised(store, "t-2", "electronics", T0)
+    cases.index(store, FakeEmbedder(), lake)
+    set_outcome(store, earlier, FALSE_POSITIVE, cases.SIMULATED, T0 - timedelta(hours=23))
+    embedder = FakeEmbedder()
+
+    found = cases.past_cases(store, embedder, store.get(target))
+
+    # The stored vector is used, so nothing is sent. The alert does not find itself.
+    assert embedder.requests == []
+    assert [case["alert_id"] for case in found] == [earlier]
+    assert found[0]["outcome"] == FALSE_POSITIVE
+    assert found[0]["outcome_source"] == cases.SIMULATED
+
+
+def test_past_cases_for_a_new_alert_embed_its_facts_only(store, lake):  # noqa: F811
+    earlier = summarised(store, "t-1", "electronics", T0 - timedelta(days=1))
+    cases.index(store, FakeEmbedder(), lake)
+    fresh = store.raise_alert({**result("t-2"), "merchant_category": "electronics"}, "reason", {})
+    embedder = FakeEmbedder()
+
+    found = cases.past_cases(store, embedder, store.get(fresh))
+
+    # No summary yet: the payment and its reason are the query. The pending case reads as pending.
+    assert len(embedder.requests) == 1
+    assert "Summary" not in embedder.requests[0][0]
+    assert [(case["alert_id"], case["outcome"]) for case in found] == [(earlier, "pending")]
+
+
+def test_cited_cases_keep_their_order_and_their_outcome_at_the_alert(store, lake):  # noqa: F811
+    first = summarised(store, "t-1", "electronics", T0 - timedelta(days=2))
+    second = summarised(store, "t-2", "grocery", T0 - timedelta(days=1))
+    cases.index(store, FakeEmbedder(), lake)
+    set_outcome(store, first, CONFIRMED, cases.ANALYST, T0 - timedelta(days=1))
+    set_outcome(store, second, CONFIRMED, cases.LABEL, T0 + timedelta(days=30))
+
+    shown = cases.by_ids(store, [second, first], as_of=T0)
+
+    assert [(case["alert_id"], case["outcome"]) for case in shown] == [(second, "pending"), (first, CONFIRMED)]

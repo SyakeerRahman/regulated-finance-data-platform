@@ -65,6 +65,8 @@ alter table alerts add column if not exists case_note text;
 alter table alerts add column if not exists case_note_model text;
 alter table alerts add column if not exists case_note_prompt_version text;
 alter table alerts add column if not exists case_note_at timestamptz;
+-- The past cases a case note cites by id, so the dashboard can link them.
+alter table alerts add column if not exists case_note_cases bigint[];
 
 -- Past cases as vectors. Written by finplat/cases.py. Removed with the alert.
 create table if not exists case_vectors (
@@ -199,15 +201,17 @@ class Store:
                 {**narrative, "model": model, "version": prompt_version, "alert_id": alert_id},
             ).fetchone()
 
-    def save_case_note(self, alert_id: int, note: str, model: str, prompt_version: str) -> dict | None:
+    def save_case_note(
+        self, alert_id: int, note: str, model: str, prompt_version: str, cases: list[int] | None = None
+    ) -> dict | None:
         with self.connect() as connection:
             return connection.execute(
                 """
                 update alerts set case_note = %s, case_note_model = %s, case_note_prompt_version = %s,
-                                  case_note_at = now()
+                                  case_note_cases = %s, case_note_at = now()
                 where alert_id = %s returning *
                 """,
-                (note, model, prompt_version, alert_id),
+                (note, model, prompt_version, cases or [], alert_id),
             ).fetchone()
 
     def agreement(self) -> dict:

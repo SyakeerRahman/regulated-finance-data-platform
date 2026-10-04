@@ -450,11 +450,30 @@ def test_a_case_note_gets_its_evidence_from_code_not_from_the_model():
         def tool_similar_alerts(self, alert_id, limit=5) -> dict:
             return {"decided": {"confirmed_fraud": 3}}
 
-    llm = FakeLLM([{"content": "## Summary\nFraud."}])
+        def tool_similar_cases(self, alert_id, limit=5) -> dict:
+            return {"cases": [{"alert_id": 567, "outcome": "confirmed_fraud"}, {"alert_id": 12, "outcome": "pending"}]}
+
+    llm = FakeLLM([{"content": "## Summary\nFraud, as in #567. Not #9999, which was never given."}])
 
     note = assistant.case_note(llm, Evidence(), 8)
 
     request = llm.requests[0][-1]["content"]
     assert '"average_spend": 8.51' in request
     assert '"confirmed_fraud": 3' in request
-    assert [call["tool"] for call in note["tools"]] == ["get_alert", "account_history", "similar_alerts"]
+    assert '"alert_id": 567' in request
+    assert [call["tool"] for call in note["tools"]] == [
+        "get_alert",
+        "account_history",
+        "similar_alerts",
+        "similar_cases",
+    ]
+    # Only a case that was in the evidence counts as cited. An id the model made up does not.
+    assert note["cases"] == [567]
+
+
+def test_past_cases_reach_the_narrative_only_when_given():
+    alert = {"alert_id": 8, "amount": 153.14, "country": "SG", "features": SPIKE_ABROAD, "policy_rules": ["FP-2"]}
+    past = [{"alert_id": 567, "outcome": "confirmed_fraud"}]
+
+    assert "similar_past_cases" not in assistant.narration_input(alert, [])
+    assert assistant.narration_input(alert, [], past)["similar_past_cases"] == past
