@@ -11,12 +11,12 @@ states only the difference from those defaults.
 | Language | Python 3.12 |
 | Orchestration | Apache Airflow, in Docker Compose |
 | Storage | Delta Lake tables through `deltalake` (delta-rs). No Spark |
-| Hot store | Redis for recent rows. Postgres for alerts, decisions and vectors |
+| Hot store | Redis for recent rows. Postgres with pgvector for alerts, decisions and case vectors |
 | Model registry | MLflow tracking server |
 | Model | XGBoost and scikit-learn. SHAP for each prediction. Evidently for drift |
 | Serving | AWS Lambda, zip package. FastAPI on the server for the live path |
 | Frontend | React, Vite, Tailwind, shadcn/ui, Recharts |
-| AI | Any OpenAI-format chat API, DeepSeek by default, for narration and the agent. Code cites the policy. No vector index while the policy has 12 rules |
+| AI | Any OpenAI-format chat API, DeepSeek by default, for narration and the agent. Code cites the policy. Any OpenAI-format embeddings API for past cases, searched with pgvector. LangGraph for the case note review, with its Postgres checkpointer |
 | Infrastructure | Terraform for AWS. Docker Compose on the shared HostHatch VPS, behind Cloudflare Access. kind and Helm for local Kubernetes |
 | Monitoring | Prometheus and Grafana |
 | CI/CD | GitHub Actions. Tests on each push, deploy on each merge |
@@ -24,10 +24,12 @@ states only the difference from those defaults.
 | Data | Synthetic transactions from `finplat/generate.py`. No real customer data |
 
 Out of scope: Java, Greenplum, Jira, dbt, Spark, Flink, Airbyte, Feast, Great Expectations,
-LangChain, OpenMetadata, Kubernetes in production.
+the `langchain` package, OpenMetadata, Kubernetes in production. LangGraph brings `langchain-core`
+with it. Do not add `langchain` itself: the model call stays in `finplat/llm.py`.
 
 The stack is locked. Do not propose an alternative without a stated reason. It last changed on
-2026-10-03, for the AI row. The reason is in `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md`.
+2026-10-04, for the AI and hot store rows. The reason is in the 2026-10-04 addendum of
+`brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md`.
 The plan and the hard limits are in `docs/brief.md`.
 
 ## Repo layout

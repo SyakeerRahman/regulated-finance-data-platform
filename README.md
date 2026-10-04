@@ -431,8 +431,9 @@ The reasons are in `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.m
 | ---- | ------------ | ----- |
 | Policy citation | Code picks the rule of `FP-2026` that the alert breaks, when the alert is raised | `finplat/policy.py` |
 | AI analyst | Two sentences, a suggestion (likely fraud, likely false positive or unsure) and one check | `finplat/assistant.py`, `narrate` |
-| Case note | An agent reads the alert, the account and the policy with tools, then writes a note | `finplat/assistant.py`, `case_note` |
-| Ask AI | A chat with eight read-only tools over Postgres, the lake and MLflow | `finplat/assistant.py`, `ask` |
+| Past cases | A search by meaning over earlier alerts, with each outcome as it was known then | `finplat/cases.py` |
+| Case note | An agent drafts a note from evidence that code reads. The analyst approves it or returns it | `finplat/case_flow.py` |
+| Ask AI | A chat with ten read-only tools over Postgres, the lake and MLflow | `finplat/assistant.py`, `ask` |
 | Agreement | How often the suggestion matched the analyst decision | `Store.agreement` |
 
 Five rules hold the layer in place:
@@ -447,6 +448,61 @@ Five rules hold the layer in place:
    and its policy rule. The dashboard says that the AI is off.
 5. **Each answer keeps its prompt version.** The version is a hash of the prompt file in
    `finplat/prompts/`, so an edit changes it and nobody has to remember to.
+6. **A draft is not a case note.** The agent writes a draft. Only the analyst's approval saves it.
+
+### Past cases
+
+Each alert with an AI summary is a case. `finplat/cases.py` embeds its text into the
+`case_vectors` table in Postgres, with pgvector. The text holds the payment, the top reason, the
+policy rules, the summary and the case note.
+
+Each case has an outcome, a source and the time the outcome became known:
+
+| Source | Known at | Note |
+| ------ | -------- | ---- |
+| `analyst` | The time of the decision | Wins over a label |
+| `label` | `labelled_at` in `silver/labels` | A chargeback or a closed dispute window, 30 to 90 days after the payment |
+| `simulated` | 1 hour after the alert | The true answer, for the demo only. It is never written to `alerts.status`, so it never becomes a training label |
+| none | - | Pending. Not evidence either way |
+
+A search for an alert shows each past case as it was when that alert was raised. It does not
+return a case raised later. It shows an outcome that became known later as pending. This is the
+same rule as `amount_vs_account`: a feature must not see the future.
+
+The search is exact, over every case, by cosine distance. An HNSW index comes only when a
+measurement shows a need for it.
+
+```text
+docker compose exec api python -m finplat.cases index
+docker compose exec api python -m finplat.cases simulate --count 200
+```
+
+`index` embeds new cases and cases with new text, then sets every outcome. A second run sends no
+request. The API also indexes a case after each decision, summary or case note.
+
+`simulate` exists because no label is known yet. The lake starts on 2026-09-24, and labels arrive
+30 to 90 days late. The dashboard marks every simulated outcome as "simulated, demo".
+
+### The case note waits for the analyst
+
+The case note is a LangGraph workflow, in `finplat/case_flow.py`:
+
+```text
+gather_evidence -> retrieve_cases -> draft_note -> analyst_review
+analyst_review: approve -> save_note
+analyst_review: return  -> draft_note
+```
+
+1. Code reads the alert, the account, the similar alerts and the past cases.
+2. The model writes a draft. It names each past case that it uses by its id, for example #567.
+3. The run stops at `analyst_review` and waits.
+4. The analyst approves the draft, or returns it with a comment. A returned draft comes back as a
+   new draft that answers the comment.
+5. After 3 returns, the analyst writes the note by hand.
+
+The LangGraph Postgres checkpointer saves the state of each run, so a draft waits through a
+restart of the API. The approved note records the analyst's login from Cloudflare Access, when
+there is one.
 
 ### How good the AI suggestion is
 
@@ -472,6 +528,25 @@ the one its numbers came from.
 
 The last column is the reason a person decides. An analyst who followed the AI alone would close
 13% of real fraud as false alarms.
+
+`--compare` grades the same alerts twice, without and with their past cases. It stores no answer,
+and it logs to the `ai-analyst-retrieval` experiment, so the Ask AI tab keeps the live grade.
+
+```text
+docker compose exec api python -m finplat.ai_eval --compare --alerts 50 --seed 41
+```
+
+Measured on 2026-10-04, on 50 alerts, with prompt `0043499e`:
+
+| Past cases | Right, when it answers | False alarms it spots | Fraud precision | Decided cases seen |
+| ---------- | ---------------------- | --------------------- | --------------- | ------------------ |
+| Without | 90.0% | 80% | 92.3% | 0 |
+| With | 87.8% | 80% | 85.7% | 2.08 for each alert |
+
+Retrieval did not improve the suggestion. The difference is 1 alert, which is noise at this
+sample size. The model saw about 2 decided cases for each alert, and the prompt lets past cases
+count only when 3 or more agree. The case note still cites past cases, so the analyst can check
+them.
 
 The model writes the narrative only when an analyst opens the alert, and the answer is stored.
 At 1 payment each second, about 860 alerts arrive each day, and most are never opened.
@@ -504,6 +579,10 @@ must be 2000 or less, the pgvector index limit. Each embedding request counts in
 
 DeepSeek processes requests on servers in China. The data here is synthetic. A real card issuer
 must not send card data to a provider outside its approved jurisdictions.
+
+The provider receives this case data: the alert, the account history, the similar alerts, the
+past cases, and the text of each case for its embedding. The data is synthetic. A real bank would
+use a provider in an approved jurisdiction, or a local embedding model.
 
 ## The live feed writes to the lake in batches
 
