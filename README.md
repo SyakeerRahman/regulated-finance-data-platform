@@ -36,6 +36,8 @@ regulated-finance-data-platform/
     domain.py               # the vocabulary. Imports nothing, so the Lambda can carry it
     export.py               # the live model as plain JSON, for the Lambda
     quality.py              # the checks that stop a bad batch reaching gold
+    catalog.py              # what each lake table and column means. A test keeps it true
+    mcp_server.py           # the read-only AI tools, over MCP, for Claude Desktop and others
     retention.py            # delete old batches, VACUUM, delete old Airflow logs
     explain.py              # SHAP, turned into a sentence an analyst reads
     alerts.py               # alerts and analyst decisions, in Postgres
@@ -109,6 +111,10 @@ answers in production.
 | `quality/checks` | `record` | One row per check per batch, with the value and the threshold |
 
 A rerun of a batch replaces that batch. It does not add a second copy.
+
+`finplat/catalog.py` says what each table and each column means, and how long a table keeps a
+batch. The Data tab shows a column's meaning when you hover its heading. `tests/test_catalog.py`
+compares the catalog with the real Delta schemas, so a new column without a description fails CI.
 
 ## The label is not a column on the transaction
 
@@ -435,12 +441,14 @@ The reasons are in `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.m
 | Case note | An agent drafts a note from evidence that code reads. The analyst approves it or returns it | `finplat/case_flow.py` |
 | Ask AI | A chat with twelve read-only tools over Postgres, the lake and MLflow | `finplat/assistant.py`, `ask` |
 | Agreement | How often the suggestion matched the analyst decision | `Store.agreement` |
+| MCP server | The same twelve tools for any MCP client, for example Claude Desktop | `finplat/mcp_server.py` |
 
-Five rules hold the layer in place:
+Six rules hold the layer in place:
 
 1. **Code cites the rule.** A regulator asks which rule an alert broke. The answer must be the same
    on every replay, so the model receives the rule and cannot change it.
-2. **The tools only read.** A test fails if a tool name starts with a write verb.
+2. **The tools only read.** A test fails if a tool name starts with a write verb. The rule holds
+   for every client: Ask AI and the MCP server serve one list through one dispatch.
 3. **A suggestion is never a label.** It is stored in `ai_suggestion`, beside the analyst status.
    `export_decisions` reads only the status. A test checks this with a suggestion and a decision
    that disagree.
@@ -503,6 +511,40 @@ analyst_review: return  -> draft_note
 The LangGraph Postgres checkpointer saves the state of each run, so a draft waits through a
 restart of the API. The approved note records the analyst's login from Cloudflare Access, when
 there is one.
+
+### Use the tools from Claude Desktop
+
+`finplat/mcp_server.py` serves the Ask AI tools over MCP, on stdio. It opens no port. The client
+starts the server inside the API container, so the server reads the same Postgres, lake and MLflow.
+
+| MCP part | Content |
+|---|---|
+| Tools | The twelve Ask AI tools, each marked read-only |
+| Resources | `finplat://policy/rules`, and `finplat://catalog/<table>` for each lake table |
+| Prompt | `investigate_alert(alert_id)`: five steps that end without a decision |
+
+To connect Claude Desktop, start the local stack, then add this to
+`%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "finplat": {
+      "command": "docker",
+      "args": ["exec", "-i", "finplat-api", "python", "-m", "finplat.mcp_server"]
+    }
+  }
+}
+```
+
+For Claude Code: `claude mcp add finplat -- docker exec -i finplat-api python -m finplat.mcp_server`.
+
+Do not use `docker compose exec`. An MCP client starts the server with only a few environment
+variables, and the Docker CLI then cannot find its compose plugin. That is why the API container
+has the fixed name `finplat-api`.
+
+Example questions: "Why did yesterday's batch fail, and which alerts came from it?", "What does
+`amount_vs_account` mean?", "Which accounts had the most alerts this week?"
 
 ### How good the AI suggestion is
 
