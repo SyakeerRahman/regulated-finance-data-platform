@@ -517,26 +517,55 @@ def case_note(llm: LLM, toolbox: Toolbox, alert_id: int) -> dict:
     alert and the policy, and wrote a note without them. Evidence a note must hold is not left to
     the model's choice.
     """
-    prompt = prompts.load("case_note")
-    evidence = {
+    evidence = gather_evidence(toolbox, alert_id)
+    evidence["past_cases"] = retrieve_cases(toolbox, alert_id)
+    return draft_case_note(llm, toolbox, alert_id, evidence)
+
+
+# The evidence every note holds, read by code in this order. The tool names are reported with the
+# note, so the analyst sees what was read.
+EVIDENCE_TOOLS = ("get_alert", "account_history", "similar_alerts", "similar_cases")
+
+
+def gather_evidence(toolbox: Toolbox, alert_id: int) -> dict:
+    """The alert, the account and the similar alerts."""
+    return {
         "alert": toolbox.run("get_alert", {"alert_id": alert_id}),
         "account": toolbox.run("account_history", {"account_id": toolbox.store.get(alert_id)["account_id"]}),
         "similar_alerts": toolbox.run("similar_alerts", {"alert_id": alert_id}),
-        "past_cases": toolbox.run("similar_cases", {"alert_id": alert_id}),
     }
-    gathered = [
-        {"tool": name, "arguments": {"alert_id": alert_id}}
-        for name in ("get_alert", "account_history", "similar_alerts", "similar_cases")
-    ]
+
+
+def retrieve_cases(toolbox: Toolbox, alert_id: int) -> dict:
+    """The nearest past cases, found by meaning. An error result when the case search is off."""
+    return toolbox.run("similar_cases", {"alert_id": alert_id})
+
+
+def draft_case_note(
+    llm: LLM, toolbox: Toolbox, alert_id: int, evidence: dict, comment: str | None = None, previous: str | None = None
+) -> dict:
+    """The model writes the note from the evidence, and may read more.
+
+    With an analyst's comment, it rewrites its previous draft to answer that comment.
+    """
+    prompt = prompts.load("case_note")
     request = (
         f"Write the case note for alert #{alert_id}. The evidence below is already read for you. "
         "Use a tool only for something it does not hold.\n\n"
         + json.dumps(evidence, default=str)[: TOOL_RESULT_CHARS * 2]
     )
+    if comment:
+        request += (
+            "\n\nThe analyst returned your previous draft with this comment. Write the note again and "
+            f"answer the comment. Keep every fact tied to the evidence.\n\nComment: {comment}\n\n"
+            f"Previous draft:\n{previous or ''}"
+        )
     answer = run_agent(llm, toolbox, prompt.text, [{"role": "user", "content": request}])
     if not answer["answer"]:
         raise LLMError("the case note is empty")
-    found = evidence["past_cases"].get("cases", []) if isinstance(evidence["past_cases"], dict) else []
+    past = evidence.get("past_cases")
+    found = past.get("cases", []) if isinstance(past, dict) else []
+    gathered = [{"tool": name, "arguments": {"alert_id": alert_id}} for name in EVIDENCE_TOOLS]
     return {
         **answer,
         "tools": gathered + answer["tools"],

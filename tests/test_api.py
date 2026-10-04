@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.main
+from finplat import case_flow
 from finplat.embed import Embedder
 from finplat.llm import LLM, Budget
 from tests.test_ai import SPIKE_ABROAD, FakeLLM
@@ -175,3 +176,80 @@ def test_a_streamed_failure_is_an_error_event(client):
 
     assert '"type": "error"' in answer.text
     assert '"status": 429' in answer.text
+
+
+def test_a_case_note_waits_for_the_analyst_and_is_saved_only_on_approval(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    use_llm(FakeLLM([{"content": "## Summary\nFirst draft."}, {"content": "## Summary\nSecond draft."}]))
+
+    first = client.post(f"/api/alerts/{alert_id}/case-note").json()
+    assert first["waiting"] and first["draft"] == "## Summary\nFirst draft."
+    assert first["alert"]["case_note"] is None
+    # Asked again, the waiting draft comes back. The fake has 1 reply left for the redraft only.
+    assert client.post(f"/api/alerts/{alert_id}/case-note").json()["draft"] == "## Summary\nFirst draft."
+
+    review = f"/api/alerts/{alert_id}/case-note/review"
+    assert client.post(review, json={"action": "return"}).status_code == 400
+    assert client.post(review, json={"action": "delete"}).status_code == 422
+    second = client.post(review, json={"action": "return", "comment": "Shorter."}).json()
+    assert second["draft"] == "## Summary\nSecond draft." and second["returns"] == 1
+
+    approved = client.post(review, json={"action": "approve"}).json()
+    assert approved["status"] == "approved" and not approved["waiting"]
+    assert approved["alert"]["case_note"] == "## Summary\nSecond draft."
+    assert client.post(review, json={"action": "approve"}).status_code == 409
+
+
+def test_a_review_with_no_draft_is_a_conflict(client, store):  # noqa: F811
+    alert_id = raise_alert(store)
+    assert client.post(f"/api/alerts/{alert_id}/case-note/review", json={"action": "approve"}).status_code == 409
+
+
+def test_opening_an_alert_never_starts_a_run(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    # The fake has no reply. A model call would fail the request.
+    use_llm(FakeLLM([]))
+
+    assert client.get(f"/api/alerts/{alert_id}/case-note").json()["status"] == "none"
+
+
+def test_the_approver_is_the_login_cloudflare_access_sends(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    use_llm(FakeLLM([{"content": "## Summary\nDraft."}]))
+    client.post(f"/api/alerts/{alert_id}/case-note")
+
+    client.post(
+        f"/api/alerts/{alert_id}/case-note/review",
+        json={"action": "approve"},
+        headers={"Cf-Access-Authenticated-User-Email": "analyst@example.com"},
+    )
+
+    state = client.get(f"/api/alerts/{alert_id}/case-note").json()
+    assert state["status"] == "approved"
+    assert state["alert"]["case_note_by"] == "analyst@example.com"
+    assert state["alert"]["case_note_at"]
+
+
+def test_after_three_returns_the_analyst_writes_the_note(client, store, test_dsn):  # noqa: F811
+    case_flow.setup(test_dsn)
+    alert_id = raise_alert(store)
+    use_llm(FakeLLM([{"content": f"## Summary\nDraft {number}."} for number in range(1, 5)]))
+    client.post(f"/api/alerts/{alert_id}/case-note")
+    review = f"/api/alerts/{alert_id}/case-note/review"
+    for _ in range(4):
+        last = client.post(review, json={"action": "return", "comment": "No."}).json()
+
+    assert last["status"] == "manual"
+    # The manual state stays until the analyst writes the note, and shows the last draft to start from.
+    waiting = client.get(f"/api/alerts/{alert_id}/case-note").json()
+    assert waiting["status"] == "manual" and waiting["draft"] == "## Summary\nDraft 4."
+
+    assert client.post(f"/api/alerts/{alert_id}/case-note/manual", json={"text": "  "}).status_code == 400
+    saved = client.post(f"/api/alerts/{alert_id}/case-note/manual", json={"text": "Written by hand."}).json()
+    assert saved["status"] == "approved"
+    assert saved["alert"]["case_note"] == "Written by hand."
+    assert saved["alert"]["case_note_model"] is None
+    assert client.get(f"/api/alerts/{alert_id}/case-note").json()["status"] == "approved"

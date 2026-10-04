@@ -67,6 +67,10 @@ alter table alerts add column if not exists case_note_prompt_version text;
 alter table alerts add column if not exists case_note_at timestamptz;
 -- The past cases a case note cites by id, so the dashboard can link them.
 alter table alerts add column if not exists case_note_cases bigint[];
+-- The LangGraph run of the latest case note. Its draft waits in the checkpoint tables.
+alter table alerts add column if not exists case_note_thread text;
+-- Who approved the note, or wrote it by hand. The login email once Cloudflare Access is in front.
+alter table alerts add column if not exists case_note_by text;
 
 -- Past cases as vectors. Written by finplat/cases.py. Removed with the alert.
 create table if not exists case_vectors (
@@ -201,17 +205,27 @@ class Store:
                 {**narrative, "model": model, "version": prompt_version, "alert_id": alert_id},
             ).fetchone()
 
+    def set_case_note_thread(self, alert_id: int, thread: str | None) -> None:
+        with self.connect() as connection:
+            connection.execute("update alerts set case_note_thread = %s where alert_id = %s", (thread, alert_id))
+
     def save_case_note(
-        self, alert_id: int, note: str, model: str, prompt_version: str, cases: list[int] | None = None
+        self,
+        alert_id: int,
+        note: str,
+        model: str | None,
+        prompt_version: str | None,
+        cases: list[int] | None = None,
+        by: str | None = None,
     ) -> dict | None:
         with self.connect() as connection:
             return connection.execute(
                 """
                 update alerts set case_note = %s, case_note_model = %s, case_note_prompt_version = %s,
-                                  case_note_cases = %s, case_note_at = now()
+                                  case_note_cases = %s, case_note_by = %s, case_note_at = now()
                 where alert_id = %s returning *
                 """,
-                (note, model, prompt_version, cases or [], alert_id),
+                (note, model, prompt_version, cases or [], by, alert_id),
             ).fetchone()
 
     def agreement(self) -> dict:
