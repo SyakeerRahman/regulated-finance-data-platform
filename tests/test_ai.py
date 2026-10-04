@@ -7,6 +7,7 @@ nothing, and gives the same result every time.
 import json
 from datetime import date
 
+import pandas as pd
 import pytest
 from deltalake import DeltaTable
 
@@ -477,3 +478,57 @@ def test_past_cases_reach_the_narrative_only_when_given():
 
     assert "similar_past_cases" not in assistant.narration_input(alert, [])
     assert assistant.narration_input(alert, [], past)["similar_past_cases"] == past
+
+
+@pytest.fixture(scope="module")
+def checked_lake(tmp_path_factory) -> str:
+    """Two batches. The second is checked 5 days late, so its freshness check fails."""
+    from finplat.quality import record, run_checks
+    from tests.test_quality import NOW, load
+
+    lake = str(tmp_path_factory.mktemp("lake") / "lake")
+    first = load(lake, date(2026, 9, 1), rows=1_000)
+    record(lake, run_checks(lake, first, as_of=NOW), as_of=NOW)
+    late = NOW + pd.Timedelta(days=5)
+    second = load(lake, date(2026, 9, 2), rows=1_000)
+    record(lake, run_checks(lake, second, as_of=late), as_of=late)
+    return lake
+
+
+class LakeBox(assistant.Toolbox):
+    def __init__(self, lake: str) -> None:
+        super().__init__(store=None, lake=lake, model_info=dict)
+
+
+def test_the_agent_reads_the_stored_quality_results_to_say_why_a_batch_failed(checked_lake):
+    llm = FakeLLM([tool_call("quality_history", {"days": 7}), {"content": "Batch 2026-09-02 failed freshness."}])
+
+    answer = assistant.run_agent(
+        llm, LakeBox(checked_lake), "system", [{"role": "user", "content": "Why did the batch fail?"}]
+    )
+
+    assert answer["tools"] == [{"tool": "quality_history", "arguments": {"days": 7}}]
+    result = json.loads(llm.requests[1][-1]["content"])
+    newest, oldest = result["batches"]
+    assert newest["batch_id"] == "2026-09-02" and newest["stopped_the_run"]
+    assert "freshness" in [check["check"] for check in newest["failed"]]
+    assert oldest["batch_id"] == "2026-09-01" and not oldest["stopped_the_run"]
+
+
+def test_quality_history_on_an_empty_lake_says_so(tmp_path):
+    assert "no quality results" in LakeBox(str(tmp_path)).run("quality_history", {})["error"]
+
+
+def test_describe_table_lists_the_tables_and_explains_a_column():
+    box = Box()
+    tables = [row["table"] for row in box.run("describe_table", {})["tables"]]
+    assert "gold/transaction_features" in tables
+
+    gold = box.run("describe_table", {"name": "gold/transaction_features"})
+    assert "earlier payments only" in gold["columns"]["amount_vs_account"]
+
+
+def test_describe_table_with_an_unknown_name_returns_an_error_the_model_can_read():
+    answer = Box().run("describe_table", {"name": "gold"})
+    assert "there is no table gold" in answer["error"]
+    assert "gold/transaction_features" in answer["error"]
