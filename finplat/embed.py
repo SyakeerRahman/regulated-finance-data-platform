@@ -51,3 +51,15 @@ class Embedder:
             if len(vector) != self.dim:
                 raise LLMError(f"{self.model} returned {len(vector)} numbers, and EMBED_DIM is {self.dim}")
         return vectors
+
+
+def from_settings(settings, budget: Budget | None = None) -> Embedder:
+    """The embedder the settings describe. `or`, not a default: the server compose file passes an
+    unset variable as an empty string."""
+    return Embedder(
+        settings.embed_base_url or settings.llm_base_url,
+        settings.embed_model,
+        settings.embed_dim,
+        settings.embed_api_key or settings.llm_api_key,
+        budget,
+    )

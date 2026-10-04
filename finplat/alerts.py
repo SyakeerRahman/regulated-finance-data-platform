@@ -65,6 +65,22 @@ alter table alerts add column if not exists case_note text;
 alter table alerts add column if not exists case_note_model text;
 alter table alerts add column if not exists case_note_prompt_version text;
 alter table alerts add column if not exists case_note_at timestamptz;
+
+-- Past cases as vectors. Written by finplat/cases.py. Removed with the alert.
+create table if not exists case_vectors (
+    alert_id        bigint primary key references alerts (alert_id) on delete cascade,
+    text            text not null,
+    embed_model     text not null,
+    -- No length on the type: the length belongs to the model, and every search filters by model.
+    embedding       vector not null,
+    -- confirmed_fraud or false_positive. Null while pending.
+    outcome         text,
+    -- analyst, label or simulated.
+    outcome_source  text,
+    -- When the outcome became known. A search hides an outcome known after the alert it serves.
+    known_at        timestamptz,
+    indexed_at      timestamptz not null default now()
+);
 """
 
 # What the language model may suggest. It is advice, so it lives beside the decision and never in it.

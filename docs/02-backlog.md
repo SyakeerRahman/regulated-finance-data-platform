@@ -164,3 +164,19 @@ Approved by the owner on 2026-10-03. All 4 recommendations above are accepted:
    from `silver/labels` once its `labelled_at` has passed.
 3. No `langchain` package. Only `langgraph`, `langgraph-checkpoint-postgres` and what they bring.
 4. Embedding calls count in `LLM_DAILY_CALLS`. No separate budget.
+
+## Change to decision 2, during SCRUM-33
+
+Decided by the owner on 2026-10-04. Labels arrive 30 to 90 days after the payment, and the lake
+starts on 2026-09-24, so no label is known yet. With only known outcomes, the corpus held 1 case.
+
+The corpus is now every alert with an AI summary. Each case has an outcome and its source:
+
+- `analyst`: the analyst decision, known at `decided_at`.
+- `label`: the label from `silver/labels`, known at `labelled_at`.
+- `simulated`: the true answer, written by a demo command and known at the time it ran. It lives
+  only in `case_vectors`, never in `alerts.status`, so it can never become a training label.
+- No outcome yet: the case is returned as pending.
+
+The leak rule now applies to the outcome: a search for an alert shows an outcome only when it
+was known before that alert was raised. A case raised after that alert is not returned.

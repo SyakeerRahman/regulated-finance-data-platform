@@ -23,9 +23,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from finplat import ai_eval, assistant, lake_browser, model_report, ops, policy, prompts
+from finplat import ai_eval, assistant, cases, embed, lake_browser, model_report, ops, policy, prompts
 from finplat.alerts import DECISIONS, Store, export_decisions
-from finplat.embed import Embedder
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
 from finplat.feed import Pool
@@ -69,14 +68,7 @@ class Engine:
         # One budget for both: every request spends the same owner's credit.
         budget = Budget(settings.llm_daily_calls)
         self.llm = LLM(settings.llm_base_url, settings.llm_model, settings.llm_api_key, budget)
-        # `or`, not a default: the server compose file passes an unset variable as an empty string.
-        self.embedder = Embedder(
-            settings.embed_base_url or settings.llm_base_url,
-            settings.embed_model,
-            settings.embed_dim,
-            settings.embed_api_key or settings.llm_api_key,
-            budget,
-        )
+        self.embedder = embed.from_settings(settings, budget)
         self.model_version = live_version(settings.mlflow_tracking_uri)
         self.threshold = production_threshold(settings.mlflow_tracking_uri)
         self.history = AccountHistory()
@@ -346,12 +338,34 @@ class Decisions(BaseModel):
     status: str
 
 
+def _reindex(alert_ids: list[int]) -> None:
+    """Keep the case search current after a decision, a summary or a case note.
+
+    In a thread, so a slow or failed embedding never delays the analyst. A case missed here is
+    caught up by the next `python -m finplat.cases index`, which costs nothing for the rest.
+    """
+    if not engine.embedder.enabled:
+        return
+
+    def work() -> None:
+        try:
+            cases.index(engine.store, engine.embedder, engine.lake, alert_ids)
+        except Exception as error:  # noqa: BLE001 - logged, and the next index run repairs it
+            engine.stats.note(
+                "cases", f"Case index failed for {len(alert_ids)} alerts: {error}", time.time(), "warning"
+            )
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 @app.post("/api/alerts/decisions")
 def decide_many(body: Decisions) -> dict:
     """The same decision on every selected alert."""
     if body.status not in DECISIONS:
         raise HTTPException(400, f"status must be one of {DECISIONS}")
-    return {"changed": engine.store.decide_many(body.alert_ids, body.status)}
+    changed = engine.store.decide_many(body.alert_ids, body.status)
+    _reindex(body.alert_ids)
+    return {"changed": changed}
 
 
 @app.post("/api/alerts/{alert_id}/decision")
@@ -366,6 +380,7 @@ def decide(alert_id: int, status: str) -> dict:
     row = engine.store.decide(alert_id, status)
     if row is None:
         raise HTTPException(404, f"no alert {alert_id}")
+    _reindex([alert_id])
     return row
 
 
@@ -466,6 +481,7 @@ def alert_narrative(alert_id: int, refresh: bool = False) -> dict:
     except LLMError as error:
         raise _llm_failure(error) from error
     saved = engine.store.save_narrative(alert_id, narrative, engine.llm.model, prompts.load("narrate").version)
+    _reindex([alert_id])
     return _with_rules({**alert, **saved})
 
 
@@ -481,6 +497,7 @@ def alert_case_note(alert_id: int, refresh: bool = False) -> dict:
     except LLMError as error:
         raise _llm_failure(error) from error
     saved = engine.store.save_case_note(alert_id, note["answer"], note["model"], note["prompt_version"])
+    _reindex([alert_id])
     return {"alert": _with_rules({**alert, **saved}), "tools": note["tools"]}
 
 
