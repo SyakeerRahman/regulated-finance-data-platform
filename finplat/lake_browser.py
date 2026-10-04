@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from deltalake import DeltaTable
 
+from finplat.catalog import CATALOG
 from finplat.ops import LAKE_TABLES
 from finplat.pipeline import BRONZE, GOLD, LABELS, QUARANTINE, SILVER
 from finplat.quality import QUALITY
@@ -81,7 +82,10 @@ def page(
     return {
         "table": table,
         "version": delta.version(),
-        "columns": [{"name": field.name, "type": str(field.type)} for field in rows.schema],
+        "columns": [
+            {"name": field.name, "type": str(field.type), "description": CATALOG[table].columns.get(field.name, "")}
+            for field in rows.schema
+        ],
         "rows": _records(shown),
         "total": rows.num_rows,
     }
