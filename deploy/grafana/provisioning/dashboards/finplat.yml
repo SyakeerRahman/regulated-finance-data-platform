@@ -1,0 +1,11 @@
+# Grafana loads every dashboard file in the folder at startup. The file is the source:
+# allowUiUpdates is off, so a change made in the UI cannot drift away from the repo.
+apiVersion: 1
+
+providers:
+  - name: finplat
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards
