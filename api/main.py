@@ -19,11 +19,23 @@ from queue import SimpleQueue
 import pandas as pd
 from deltalake import DeltaTable
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from finplat import ai_eval, assistant, case_flow, cases, embed, lake_browser, model_report, ops, policy, prompts
+from finplat import (
+    ai_eval,
+    assistant,
+    case_flow,
+    cases,
+    embed,
+    lake_browser,
+    metrics,
+    model_report,
+    ops,
+    policy,
+    prompts,
+)
 from finplat.alerts import DECISIONS, Store, export_decisions
 from finplat.explain import Explainer, sentence
 from finplat.features import FEATURE_COLUMNS, AccountHistory, row_features
@@ -39,6 +51,7 @@ RECENT = 200
 # Live feature rows kept for the drift check. About 7 minutes at 50 a second.
 DRIFT_SAMPLE = 20_000
 DEFAULT_RATE = 1.0
+PROMETHEUS_TEXT = "text/plain; version=0.0.4; charset=utf-8"
 
 # Never one row at a time. Each Delta write makes a parquet file and a log entry, so a row for
 # every transaction would leave 86,400 files a day and a table nothing can open.
@@ -837,6 +850,29 @@ def quality(days: int = 30) -> dict:
         "checks": sorted(frame["check"].unique().tolist()),
         "results": frame.assign(checked_at=frame["checked_at"].astype(str)).to_dict("records"),
     }
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics() -> PlainTextResponse:
+    """The numbers Prometheus stores. A scrape comes every 15 s, so each slow source is cached."""
+    version = engine.model_version
+    gathered = metrics.live(engine.scored, engine.stats.alerts_total, engine.stats.recent_latency(), version)
+    sources = {
+        # The PSI of 20,000 live rows against the training data takes about a second.
+        "drift": lambda: metrics.drift(cached(f"drift-{version}", 60, model_drift), version),
+        "quality": lambda: metrics.quality(
+            cached("quality-metrics", 60, lambda: quality_history(engine.lake, days=30)), pd.Timestamp.now(tz="UTC")
+        ),
+        "postgres": lambda: metrics.service(engine.store.counts().get("open", 0), engine.llm.budget.snapshot()),
+    }
+    up = {}
+    for name, read in sources.items():
+        try:
+            gathered += read()
+            up[name] = True
+        except Exception:  # noqa: BLE001 - a failed source shows as down, and the rest still report
+            up[name] = False
+    return PlainTextResponse(metrics.render(gathered + metrics.sources(up)), media_type=PROMETHEUS_TEXT)
 
 
 @app.get("/api/accounts/{account_id}")
