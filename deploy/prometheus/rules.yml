@@ -1,2 +1,45 @@
-# The alert rules. SCRUM-47 fills this file.
-groups: []
+# The alert rules. Prometheus evaluates them, and Alertmanager receives what fires.
+# The thresholds are the platform's own numbers, not new ones. tests/test_alert_rules.py fails
+# when a number here and its constant in finplat/ disagree.
+# deploy/prometheus/rules_test.yml proves each rule fires with promtool.
+
+groups:
+  - name: finplat
+    rules:
+      - alert: FinplatDrift
+        # PSI_SIGNIFICANT in finplat/evaluation.py. The features that grow by design are left out:
+        # they move as the lake fills, and are shown on the dashboard instead (SCRUM-49).
+        expr: max by (feature) (finplat_drift_psi{by_design="false"}) >= 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Drift on {{ $labels.feature }}: PSI {{ $value | printf \"%.2f\" }}"
+          description: "The live data no longer looks like the training data. Check the Model tab, then consider a retrain."
+
+      - alert: FinplatNoBatch
+        # FRESHNESS_HOURS in finplat/quality.py: the same limit the freshness check uses.
+        expr: finplat_last_batch_age_hours > 25
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No batch for {{ $value | printf \"%.1f\" }} hours"
+          description: "The daily DAG did not check a batch. Look at Airflow on port 8095."
+
+      - alert: FinplatQualityGate
+        expr: finplat_quality_gate_failed == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "A critical quality check stopped the newest batch"
+          description: "Gold kept yesterday. The Pipeline tab shows which check failed."
+
+      - alert: FinplatApiDown
+        expr: up{job="finplat-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus cannot reach the API"
+          description: "Scoring, alerts and /metrics are down. Check docker compose ps."

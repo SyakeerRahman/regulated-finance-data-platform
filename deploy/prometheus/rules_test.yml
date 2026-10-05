@@ -1,0 +1,79 @@
+# Unit tests for rules.yml. Run: docker run --rm -v "$PWD/deploy/prometheus:/p" -w /p
+#   --entrypoint promtool prom/prometheus:v3.15.0 test rules rules_test.yml
+rule_files:
+  - rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: drift fires after 10 minutes, and a feature that grows by design never does
+    interval: 1m
+    input_series:
+      - series: 'finplat_drift_psi{feature="amount",by_design="false",model_version="3"}'
+        values: "0.3x20"
+      - series: 'finplat_drift_psi{feature="prior_transactions",by_design="true",model_version="3"}'
+        values: "9x20"
+      - series: 'finplat_drift_psi{feature="hour",by_design="false",model_version="3"}'
+        values: "0.2x20"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FinplatDrift
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: FinplatDrift
+        exp_alerts:
+          - exp_labels: {severity: warning, feature: amount}
+            exp_annotations:
+              summary: "Drift on amount: PSI 0.30"
+              description: "The live data no longer looks like the training data. Check the Model tab, then consider a retrain."
+
+  - name: no batch fires above 25 hours
+    interval: 1m
+    input_series:
+      - series: "finplat_last_batch_age_hours"
+        values: "24.9 25 25.1+0.1x10"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: FinplatNoBatch
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: FinplatNoBatch
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "No batch for 25.7 hours"
+              description: "The daily DAG did not check a batch. Look at Airflow on port 8095."
+
+  - name: the quality gate fires at once
+    interval: 1m
+    input_series:
+      - series: "finplat_quality_gate_failed"
+        values: "0 0 1 1"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: FinplatQualityGate
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: FinplatQualityGate
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "A critical quality check stopped the newest batch"
+              description: "Gold kept yesterday. The Pipeline tab shows which check failed."
+
+  - name: the API down fires after 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="finplat-api",instance="api:8000"}'
+        values: "1 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FinplatApiDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: FinplatApiDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: finplat-api, instance: "api:8000"}
+            exp_annotations:
+              summary: "Prometheus cannot reach the API"
+              description: "Scoring, alerts and /metrics are down. Check docker compose ps."
