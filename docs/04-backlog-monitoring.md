@@ -126,3 +126,30 @@ Approved by the owner on 2026-10-05. All 3 recommendations above are accepted:
 1. `/metrics` is written by hand. No `prometheus-client`.
 2. Alerts show in the Grafana UI only in this epic. The channel is chosen with the VPS.
 3. Stage F item 6 stays open. It needs a check from outside the server, added with the VPS.
+
+## Change to the plan, during SCRUM-45
+
+Decided by the owner on 2026-10-05, after a measurement.
+
+| | Planned | Measured |
+|---|---|---|
+| Grafana image | about 0.5 GB | about 1.5 GB unpacked (`grafana/grafana:13.2.3`) |
+| Grafana memory | 256m limit | 243 MiB settled under a 512m cap. Under 256m it did not finish starting in 3.5 minutes |
+| Prometheus | about 0.3 GB, 150 MB | about 0.27 GB unpacked, 124 MiB |
+| Alertmanager | not planned | about 0.08 GB unpacked, 12 MiB |
+
+With Grafana the server images reach about 7.3 GB of the 8 GB budget before any data, and the
+lake alone grows to about 0.53 GB. The slim Grafana image has no Prometheus data source, and
+installing the plugin at startup failed.
+
+The plan now:
+
+- **The server runs Prometheus and Alertmanager. Grafana runs on this PC only.** The server images
+  grow by about 0.35 GB, to about 6 GB.
+- **The alert rules move from Grafana to Prometheus**, in `deploy/prometheus/rules.yml`, so the
+  server alerts without Grafana. Alertmanager has no channel yet: an alert shows in its UI, and
+  in Grafana on this PC.
+- **The dashboard stays a file in `deploy/grafana/`.** It is the same wherever Grafana runs.
+
+Story 2, SCRUM-45: Grafana leaves `deploy/compose.yml`, and Alertmanager joins both stacks.
+Story 4, SCRUM-47: the rules are Prometheus rules, not Grafana rules. The four conditions stay.

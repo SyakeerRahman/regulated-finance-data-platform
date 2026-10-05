@@ -1,0 +1,25 @@
+# Prometheus for finplat. The same file serves the local stack and the server.
+# Retention is a command flag in the compose files, not a setting here: 15 days.
+
+global:
+  scrape_interval: 15s
+  # The drift refresh takes about 0.25 s, and 1 s on the first scrape after a restart.
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+# The alert rules live in Prometheus and not in Grafana, because the server runs no Grafana.
+# See docs/04-backlog-monitoring.md, "Change to the plan, during SCRUM-45".
+rule_files:
+  - /etc/prometheus/rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: finplat-api
+    metrics_path: /metrics
+    static_configs:
+      # The service name inside the compose network.
+      - targets: ["api:8000"]
