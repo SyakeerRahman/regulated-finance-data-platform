@@ -46,6 +46,18 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+  alert-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The same Prometheus version as both compose files. promtool checks the syntax, then
+      # feeds each rule a made-up series and asserts when it fires and when it does not.
+      - name: Check and test the alert rules
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/p" -w /p --entrypoint promtool             prom/prometheus:v3.15.0 check rules rules.yml
+          docker run --rm -v "$PWD/deploy/prometheus:/p" -w /p --entrypoint promtool             prom/prometheus:v3.15.0 test rules rules_test.yml
+
   terraform:
     runs-on: ubuntu-latest
     steps:
