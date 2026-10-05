@@ -24,6 +24,9 @@ The workspace rules are in `C:\Users\User\Project\CLAUDE.md`.
 | Give pending cases a simulated outcome, for the demo | `docker compose exec api python -m finplat.cases simulate --count 200` |
 | Rebuild the Airflow image after a dependency change | `docker compose build` |
 | Start the MCP server, as an MCP client does | `docker exec -i finplat-api python -m finplat.mcp_server` |
+| The numbers Prometheus reads | `curl -s http://127.0.0.1:8097/metrics` |
+| Test the alert rules, as CI does | `MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W)/deploy/prometheus:/p" -w /p --entrypoint promtool prom/prometheus:v3.15.0 test rules rules_test.yml` |
+| Load a dashboard or rule change | `docker compose restart grafana` or `docker compose restart prometheus` |
 
 `.env` with `LAKE_URI=data/lake` must exist before any command that touches the lake. The settings
 class has no default for it, so a missing value stops startup.
@@ -130,6 +133,26 @@ Epic SCRUM-38 (2026-10-04) added a data catalog and an MCP server. The plan is `
   find its plugin. Use `docker exec -i finplat-api`. Keep the `container_name` of the API.
 - The API image copies `finplat` in and has no mount. A code change needs
   `docker compose up -d --build api` before the API or the MCP server sees it.
+
+Epic SCRUM-43 (2026-10-05) added monitoring. The plan is `docs/04-backlog-monitoring.md`, the
+reasons `brain/decisions/2026-10-05-the-server-alerts-without-grafana.md`.
+- `finplat/metrics.py` writes the Prometheus text format by hand. `GET /metrics` in `api/main.py`
+  gathers it. A slow source is cached for 60 s, and a failed one shows as `finplat_source_up 0`.
+  A new metric needs a line in a `metrics` function, a panel in the dashboard file, and an entry
+  in `tests/test_metrics.py`.
+- Prometheus and Alertmanager run in both stacks. Grafana runs on this PC only: its image is
+  about 1.5 GB and the server budget is 8 GB. Never add Grafana to `deploy/compose.yml` without
+  a new disk budget.
+- The alert rules are in `deploy/prometheus/rules.yml`, tested by `rules_test.yml` with promtool
+  in the `alert-rules` CI job. A threshold must be a constant from `finplat/`, and
+  `tests/test_alert_rules.py` checks that it is. Never type a new number into a rule.
+- The dashboard is `deploy/grafana/dashboards/finplat.json`, read-only in the UI. Edit the file.
+- The feed serves rows of the current UTC hour (`finplat/feed.py`), and the drift check weights the
+  training rows to the live hours (`model_report.hour_weights`). Without both, `is_night` reads
+  a PSI of 11 on a calm day. `prior_transactions` and `amount_vs_account` are in
+  `GROWS_BY_DESIGN`: shown, and left out of the drift alert.
+- Alertmanager has no channel. Stage F item 6, an alert when the platform stops, is still open:
+  it needs a check from outside the server.
 
 Stage F so far: the repo is public on GitHub, CI runs the tests against a Postgres service, and each
 green push to `main` publishes both images to GHCR, tagged with the commit SHA.
