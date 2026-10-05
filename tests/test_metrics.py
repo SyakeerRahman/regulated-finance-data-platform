@@ -103,7 +103,7 @@ def test_metrics_publishes_the_model_the_data_and_the_service(scrape):
     ):
         assert name in found, name
     assert 'finplat_scored_total{model_version="3"} 1500.0' in found["finplat_scored_total"]
-    assert 'finplat_drift_psi{feature="amount",model_version="3"} 0.31' in found["finplat_drift_psi"]
+    assert 'finplat_drift_psi{feature="amount",by_design="false",model_version="3"} 0.31' in found["finplat_drift_psi"]
     assert all(line.endswith(" 1.0") for line in found["finplat_source_up"])
 
 

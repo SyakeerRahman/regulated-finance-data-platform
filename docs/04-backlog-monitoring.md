@@ -27,7 +27,8 @@ Estimate: about 11 hours, or 1.5 weekends.
 | 1 | SCRUM-44 | Story | The API publishes its numbers at /metrics | 3 | - |
 | 2 | SCRUM-45 | Story | Prometheus and Grafana run in both stacks, inside the budget | 3 | 1 |
 | 3 | SCRUM-46 | Story | One Grafana dashboard shows the model, the data and the service | 2 | 2 |
-| 4 | SCRUM-47 | Story | Grafana raises an alert when the model, the data or the service goes wrong | 2 | 3 |
+| 4a | SCRUM-49 | Story | The drift check compares like with like | 3 | 1 |
+| 4 | SCRUM-47 | Story | Grafana raises an alert when the model, the data or the service goes wrong | 2 | 3, 4a |
 | 5 | SCRUM-48 | Task | Record the decision and update the docs | 1 | 1 to 4 |
 
 ### 1. The API publishes its numbers at /metrics
@@ -153,3 +154,36 @@ The plan now:
 
 Story 2, SCRUM-45: Grafana leaves `deploy/compose.yml`, and Alertmanager joins both stacks.
 Story 4, SCRUM-47: the rules are Prometheus rules, not Grafana rules. The four conditions stay.
+
+## Story added on 2026-10-05: 4a. The drift check compares like with like (SCRUM-49)
+
+Found in SCRUM-44 and SCRUM-46: on a calm day the PSI read is_night 11.4, hour 8.7,
+prior_transactions 8.6, score 1.9 and amount_vs_account 1.8. A drift rule at 0.25 would fire all
+the time. Approved at the tickets gate the same day. It blocks SCRUM-47.
+
+Proved with the live model, the live reference and the live feed, one change at a time:
+
+| Run | is_night | hour | prior_transactions | amount_vs_account | score |
+|---|---|---|---|---|---|
+| As the API did it | 11.4 | 8.7 | 8.6 | 1.8 | 0.95 |
+| The feed's own times | under 0.05 | 0.05 | 8.6 | 1.8 | 0.17 |
+| Own times, no warm history | under 0.05 | 0.05 | 1.05 | 0.89 | under 0.05 |
+
+The two causes and their fixes:
+
+- **The clock.** The feed drew rows from the whole day and stamped the current time on each, so a
+  daytime payment was flagged as night. The feed now serves rows of the current UTC hour, and the
+  drift check weights the training rows to the hours the live sample covers.
+- **History grows by design.** Model v3 trained on 2.5 days, when most accounts had 0 to 2 earlier
+  payments. Live accounts carry 12 days, a median of 4. `prior_transactions` and
+  `amount_vs_account` are marked "by design" with a reason. They stay on the dashboard and leave
+  the drift alert. They are also where a stale model shows first.
+
+Live after the fix, at 05:39 UTC, a night hour: hour and is_night 0.000, amount 0.027, score 0.178.
+
+Left open:
+
+- `psi` cannot see a shift from a reference with one value: one bin holds everything. A feature
+  that is constant in training reads 0.0 whatever arrives live.
+- The feed sleeps `1/rate` after each payment, so rate 50 gives about 37 a second at night. The
+  refill of a night hour costs about 0.19 s for each 240 rows.
