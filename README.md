@@ -193,6 +193,70 @@ changes the live model with no deploy, and a rollback is one command.
 Read the PR-AUC of 0.95 against the limits in "What this data is not". The generator writes a
 clean fraud pattern on purpose, so a high score measures the data and not the model.
 
+## Monitoring
+
+The API publishes its numbers at `GET /metrics`. Prometheus reads them every 15 s and keeps 15
+days. When a rule fires, Prometheus sends the alert to Alertmanager.
+
+| Service | Port | This PC | Server |
+|---|---|---|---|
+| Prometheus | 8099 | Yes | Yes |
+| Alertmanager | 8100 | Yes | Yes |
+| Grafana | 8098 | Yes | No |
+
+The server has no Grafana because its image is about 1.5 GB, and the server has an 8 GB disk
+budget. The reasons are in `brain/decisions/2026-10-05-the-server-alerts-without-grafana.md`.
+
+### The metrics
+
+| Area | Metrics |
+|---|---|
+| Model | `finplat_scored_total`, `finplat_alerts_total`, `finplat_score_latency_ms`, `finplat_drift_psi` |
+| Data | `finplat_quality_check_passed`, `finplat_quality_gate_failed`, `finplat_last_batch_age_hours` |
+| Service | `finplat_open_alerts`, `finplat_llm_calls_used`, `finplat_llm_calls_limit`, `finplat_source_up` |
+
+`finplat_drift_psi` has a `by_design` label. `prior_transactions` and `amount_vs_account` count an
+account's history, which grows as the lake fills, so they are `by_design="true"`. The dashboard
+shows them. The drift alert ignores them.
+
+The drift check compares the live sample with the training rows of the same hours. The feed
+serves rows of the current UTC hour, so a payment at 02:00 looks like one at 02:00.
+
+### The dashboard
+
+`deploy/grafana/dashboards/finplat.json` holds one dashboard with a row each for the model, the
+data and the service. Grafana loads it at startup and does not let the UI change it. To change a
+panel, edit the file and restart Grafana: `docker compose restart grafana`.
+
+![The dashboard](docs/design/monitoring/grafana-dashboard.png)
+
+### The alerts
+
+| Alert | Fires when | Rehearse it |
+|---|---|---|
+| FinplatApiDown | Prometheus cannot reach the API for 2 minutes | `docker compose stop api`, wait 3 minutes, then `docker compose start api` |
+| FinplatQualityGate | A critical check stopped the newest batch | The quality gate rehearsal below, on today's date |
+| FinplatDrift | A PSI with `by_design="false"` is 0.25 or more for 10 minutes | promtool only |
+| FinplatNoBatch | The last batch is older than 25 hours | promtool only |
+
+The thresholds are the code's own: `PSI_SIGNIFICANT` and `FRESHNESS_HOURS`.
+`tests/test_alert_rules.py` fails when a rule and its constant disagree.
+
+To rehearse the quality gate, run today's batch with too few rows, then run it again as normal:
+
+```bash
+docker compose exec -e ROWS_PER_BATCH=5000 airflow airflow dags test transactions_to_delta <today>
+docker compose exec airflow airflow dags test transactions_to_delta <today>
+```
+
+To test every rule without waiting, run promtool. CI runs the same commands:
+
+```bash
+docker run --rm -v "$PWD/deploy/prometheus:/p" -w /p --entrypoint promtool prom/prometheus:v3.15.0 test rules rules_test.yml
+```
+
+Alertmanager has no channel yet. An alert shows in its UI on port 8100, and in Grafana on this PC.
+
 ## Local ports
 
 | Port | Service |
@@ -200,6 +264,9 @@ clean fraud pattern on purpose, so a high score measures the data and not the mo
 | 8095 | Airflow |
 | 8096 | MLflow |
 | 8097 | The live page |
+| 8098 | Grafana, on this PC only |
+| 8099 | Prometheus |
+| 8100 | Alertmanager |
 | 5440 | Postgres |
 
 ## CI and the images
@@ -308,7 +375,7 @@ The server keeps 7 days of backups. The bucket keeps the rest.
 The services listen on the server's own address only. From your PC, open an SSH tunnel:
 
 ```bash
-ssh -L 8095:127.0.0.1:8095 -L 8096:127.0.0.1:8096 -L 8097:127.0.0.1:8097 finplat@<server ip>
+ssh -L 8095:127.0.0.1:8095 -L 8096:127.0.0.1:8096 -L 8097:127.0.0.1:8097 \n    -L 8099:127.0.0.1:8099 -L 8100:127.0.0.1:8100 finplat@<server ip>
 ```
 
 Then open these addresses on your PC:
@@ -318,6 +385,8 @@ Then open these addresses on your PC:
 | http://localhost:8097 | The dashboard |
 | http://localhost:8096 | MLflow |
 | http://localhost:8095 | Airflow |
+| http://localhost:8099 | Prometheus |
+| http://localhost:8100 | Alertmanager, with the alerts that fired |
 
 Airflow on the server gives every visitor admin rights. Never expose port 8095 to the internet.
 

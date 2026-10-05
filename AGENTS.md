@@ -18,7 +18,7 @@ states only the difference from those defaults.
 | Frontend | React, Vite, Tailwind, shadcn/ui, Recharts |
 | AI | Any OpenAI-format chat API, DeepSeek by default, for narration and the agent. Code cites the policy. Any OpenAI-format embeddings API for past cases, searched with pgvector. LangGraph for the case note review, with its Postgres checkpointer. The read-only tools also go over MCP, with the official `mcp` package |
 | Infrastructure | Terraform for AWS. Docker Compose on the shared HostHatch VPS, behind Cloudflare Access. kind and Helm for local Kubernetes |
-| Monitoring | Prometheus and Grafana |
+| Monitoring | Prometheus and Alertmanager on the server. Grafana on the owner's PC only, for the disk budget |
 | CI/CD | GitHub Actions. Tests on each push, deploy on each merge |
 | Streaming | Kafka (Redpanda), deferred. The API takes the same interface until then |
 | Data | Synthetic transactions from `finplat/generate.py`. No real customer data |
@@ -28,8 +28,9 @@ the `langchain` package, OpenMetadata, Kubernetes in production. LangGraph bring
 with it. Do not add `langchain` itself: the model call stays in `finplat/llm.py`.
 
 The stack is locked. Do not propose an alternative without a stated reason. It last changed on
-2026-10-04, for the AI and hot store rows, and again the same day for MCP. The reasons are in the
-2026-10-04 addenda of
+2026-10-05, for the monitoring row: the reason is in
+`brain/decisions/2026-10-05-the-server-alerts-without-grafana.md`. Before that, on 2026-10-04, for
+the AI and hot store rows and for MCP: the reasons are in the 2026-10-04 addenda of
 `brain/decisions/2026-10-03-the-llm-narrates-and-code-cites.md`.
 The plan and the hard limits are in `docs/brief.md`.
 
