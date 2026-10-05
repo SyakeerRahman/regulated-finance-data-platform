@@ -65,9 +65,10 @@ def drift(report: dict, version: str) -> list[Metric]:
     """PSI of each feature and of the score, live against the training data of `version`."""
     psi = Metric("finplat_drift_psi", "gauge", "Population stability index, live against training.")
     for row in report["features"]:
-        psi.add(row["psi"], feature=row["feature"], model_version=version)
+        by_design = "true" if row.get("by_design") else "false"
+        psi.add(row["psi"], feature=row["feature"], by_design=by_design, model_version=version)
     if report["prediction"]:
-        psi.add(report["prediction"]["psi"], feature="score", model_version=version)
+        psi.add(report["prediction"]["psi"], feature="score", by_design="false", model_version=version)
     rows = Metric("finplat_drift_live_rows", "gauge", "Live rows the drift check compared.").add(report["live_rows"])
     return [psi, rows]
 

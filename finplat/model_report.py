@@ -74,18 +74,54 @@ def reference(model, lake: str, label_cutoff: str | None) -> dict:
     return {"features": features, "scores": model.predict_proba(features)[:, 1]}
 
 
+# Features that move by design as the lake grows. They are shown, and left out of the drift alert.
+# Each one counts an account's earlier payments. Training rows span the whole history, from the
+# first day, when every account was new, while a live payment always comes at the end of it. Found
+# on 2026-10-05 (SCRUM-49): model v3 trained on 2.5 days had a median of 0 earlier payments, and
+# the live feed, warmed from 12 days of silver, a median of 4. A stale model shows here first.
+GROWS_BY_DESIGN = {
+    "prior_transactions": "Counts an account's earlier payments, which grow as the lake fills.",
+    "amount_vs_account": "Divides by the mean of earlier payments, which is 1.0 for every new account.",
+}
+
+
+def hour_weights(reference_hours: pd.Series, live_hours: pd.Series) -> pd.Series:
+    """A weight for each training row, so the training rows cover the hours the live sample does.
+
+    The feed stamps the real clock on each payment, so a few hours of live data hold only those
+    hours, and training holds all 24. Compared as they are, hour and is_night read as a PSI of 8
+    to 11 on a calm day (SCRUM-49). Weighted, the training rows of the same hours are the reference
+    for every feature and for the score, so a fraud-heavy night hour is compared with nights.
+    """
+    live_share = live_hours.value_counts(normalize=True)
+    reference_share = reference_hours.value_counts(normalize=True)
+    weight = (live_share / reference_share).reindex(reference_share.index).fillna(0.0)
+    return reference_hours.map(weight).fillna(0.0)
+
+
 def drift(reference: dict, live: list[dict]) -> dict:
-    """PSI of every feature and of the score, live against training."""
+    """PSI of every feature and of the score, live against the training rows of the same hours."""
     if not live:
         return {"live_rows": 0, "reference_rows": len(reference["features"]), "features": [], "prediction": None}
     current = pd.DataFrame(live)
+    weights = None
+    if "hour" in current and "hour" in reference["features"]:
+        weights = hour_weights(reference["features"]["hour"], current["hour"])
+        # No training row at the live hours: weighting cannot match them, so compare unweighted.
+        weights = weights if weights.sum() > 0 else None
     features = [
-        {"feature": name, "psi": value, "level": drift_level(value)}
+        {
+            "feature": name,
+            "psi": value,
+            "level": drift_level(value),
+            "by_design": name in GROWS_BY_DESIGN,
+            "reason": GROWS_BY_DESIGN.get(name),
+        }
         for name in reference["features"].columns
         if name in current
-        for value in [psi(reference["features"][name], current[name])]
+        for value in [psi(reference["features"][name], current[name], weights=weights)]
     ]
-    score = psi(reference["scores"], current["score"])
+    score = psi(reference["scores"], current["score"], weights=weights)
     return {
         "live_rows": len(current),
         "reference_rows": len(reference["features"]),

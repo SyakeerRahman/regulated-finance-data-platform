@@ -49,16 +49,20 @@ def curves(y_true, scored) -> dict:
     }
 
 
-def psi(reference, current, bins: int = PSI_BINS) -> float:
+def psi(reference, current, bins: int = PSI_BINS, weights=None) -> float:
     """Population stability index of `current` against `reference`.
 
     Bins are the reference's deciles, so each holds a tenth of the training data. A feature with
     few values (a 0/1 flag) gets one bin for each value instead.
+
+    `weights` gives each reference row a weight, so the reference can be made to look like the
+    live sample in one respect, such as the hours it covers, before the rest is compared.
     """
     reference = np.asarray(reference, dtype="float64")
     current = np.asarray(current, dtype="float64")
     if len(reference) == 0 or len(current) == 0:
         return 0.0
+    weights = np.ones(len(reference)) if weights is None else np.asarray(weights, dtype="float64")
 
     values = np.unique(reference)
     if len(values) <= bins:
@@ -68,7 +72,7 @@ def psi(reference, current, bins: int = PSI_BINS) -> float:
         inner = np.unique(np.quantile(reference, np.linspace(0, 1, bins + 1)[1:-1]))
         edges = np.concatenate([[-np.inf], inner, [np.inf]])
 
-    expected = np.histogram(reference, edges)[0] / len(reference)
+    expected = np.histogram(reference, edges, weights=weights)[0] / weights.sum()
     actual = np.histogram(current, edges)[0] / len(current)
     # An empty bin would make the log infinite. A small floor keeps the index finite and large.
     expected = np.clip(expected, 1e-4, None)
