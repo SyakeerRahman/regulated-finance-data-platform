@@ -78,6 +78,14 @@ class LiveStats:
         """One line in the event log. `level` is ok, warning or error."""
         self.events.appendleft({"at": now, "stage": stage, "text": text, "level": level})
 
+    @property
+    def alerts_total(self) -> int:
+        return sum(self.categories.values())
+
+    def recent_latency(self) -> tuple[float, float, float] | None:
+        """p50, p95 and p99 of the last payments, or None before the first one."""
+        return percentiles(list(self._latencies)) if self._latencies else None
+
     def snapshot(self, now: float) -> dict:
         end = _bucket_start(now)
         buckets = {bucket.start: bucket for bucket in self._buckets}
@@ -110,7 +118,7 @@ class LiveStats:
             "histogram": self.histogram,
             "categories": self.categories.most_common(TOP),
             "countries": self.countries.most_common(TOP),
-            "alerts_total": sum(self.categories.values()),
+            "alerts_total": self.alerts_total,
             "events": list(self.events),
         }
 

@@ -1,0 +1,21 @@
+# Grafana reads this at startup, so a fresh volume has the data source with no click in the UI.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: finplat-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  # The alerts that Prometheus fires. Grafana shows them, and does not evaluate rules itself.
+  - name: Alertmanager
+    uid: finplat-alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    editable: false
+    jsonData:
+      implementation: prometheus

@@ -120,8 +120,50 @@ services:
           # Idle use with 1 worker measured at 312 MiB on 2026-09-27. With 4 it was 735 MiB.
           memory: 512m
 
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    # For an SSH tunnel only, like MLflow.
+    ports:
+      - "127.0.0.1:8099:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus:/prometheus
+    depends_on:
+      - api
+      - alertmanager
+    deploy:
+      resources:
+        limits:
+          # Measured on 2026-10-05: 124 MiB with one target.
+          memory: 256m
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    # For an SSH tunnel only, like MLflow.
+    ports:
+      - "127.0.0.1:8100:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager:/alertmanager
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
 volumes:
   airflow:
   lake:
   pgvector:
   mlflow:
+  prometheus:
+  alertmanager:

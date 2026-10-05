@@ -1,0 +1,13 @@
+# Alertmanager for finplat. Prometheus fires an alert, and Alertmanager groups it and sends it on.
+# No channel yet: an alert shows in the Alertmanager UI and in Grafana only. Choose email,
+# Telegram or a webhook with the VPS work, and add it as a receiver here.
+
+route:
+  receiver: ui-only
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: ui-only
